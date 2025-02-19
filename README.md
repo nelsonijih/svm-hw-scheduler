@@ -30,6 +30,7 @@ Assumptions
   - `TX_PER_BATCH`: Maximum transactions per batch (48)
   - `NUM_DEPENDENCIES`: Number of dependency entries (1024)
   - `ACCOUNT_WIDTH`: Width of account/program IDs (64 bits)
+  - `MAX_BATCHES`: This is the max number of batches(buckets) we can work on at a time.
 
 ### 2. Conflict Checker (`conflict_checker.v`)
 - TODO: Performs conflict detection against transaction at hand and against a set of batches(buckets) that may or may not be full.
