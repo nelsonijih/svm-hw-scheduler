@@ -1,1 +1,1 @@
-# svm-hw-scheduler
+# SVM High-level Scheduler Design
