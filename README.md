@@ -1,6 +1,8 @@
 # SVM Transaction Scheduler High-level Design Specs
 A scheduler that reads from stream of transactions and checks against available maximum list of 256 batches(storage buckets), and insert in any of the first batch that a transaction does not conflict with other transactions in the batch using XOR detections 
 
+<img width="1039" alt="Screenshot 2025-02-19 at 2 59 22 PM" src="https://github.com/user-attachments/assets/07f2cf3f-52c6-48f4-9b5d-741e92b90378" />
+
 Assumptions
 - Storage buckets for storing all 256 batches is implemented and available. in some BRAM or SRAM.
 - Transaction stream buffer is impelemnted and supports simultaneous reads and writes. 
