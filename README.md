@@ -6,7 +6,7 @@ svm-hw-scheduler/
 ├── Makefile           # For building the project and running tests.
 ├── rtl/               # Verilog source files
 ├── tb/                # test bench with testcases.
-├── sim/               # output from simulations
+├── sim/               # to place output from simulations
 └── src                # Old source. Ignore this folder in this branch
 
 ## Design Implementation Overview & Components
