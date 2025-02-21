@@ -1,6 +1,8 @@
 # SVM Transaction Scheduler High-level Design Specs
 A 4-stage pipeline for reading SVM transactions and creating batches that contain non-conflicting transactions. There are two diagrams below, this prototype implements the bottom 4 stage pipeline diagram. 
 
+<img width="1094" alt="pipelined-design" src="https://github.com/user-attachments/assets/4132d790-416a-4385-9f5b-5b5be61ac6fc" />
+
 ## Project structure
 svm-hw-scheduler/
 - Makefile           # For building the project and running tests.
@@ -26,6 +28,10 @@ svm-hw-scheduler/
 ## Tests
 The test bench contains several transactions tests that conflict and some that do not
 conflict. 
+
+Blow is simulation sample output
+<img width="1438" alt="svm-schduler-sim" src="https://github.com/user-attachments/assets/190b9e65-7967-43a9-8890-91d06e5bdaa5" />
+
 
 - Transactions 1 & 2 conflicts when attemptign to add 2 after 1 was added, so 2 will not be added to the batch
 - Transactions 3 & 4 conflicts when attempting to add 4 after 3 was added, so 4 will not be added to the batch
