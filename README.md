@@ -23,7 +23,8 @@ svm-hw-scheduler/
 - Install verilog simulator(e.g icarius) and Wave form viewer(e.g gtkwave)
 - Clone the repo
 - cd to svm-hw-schduler
-- type `make sim`
+- type `make sim`to run simulation
+- type `make wave` to view the simulation in waveform
 
 ## Tests
 The test bench contains several transactions tests that conflict and some that do not
