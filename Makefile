@@ -19,4 +19,4 @@ wave: sim
 	$(WAVE_VIEWER) svm_scheduler.vcd &
 
 clean:
-	rm -f ./sim/*.vvp ./sim/*.vcd
+	rm -f *.vvp *.vcd
