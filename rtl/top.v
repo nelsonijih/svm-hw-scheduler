@@ -28,7 +28,7 @@ module top (
     wire pipeline_ready;          // Indicates pipeline ready for next transaction
     wire [63:0] accepted_id;      // ID of accepted transaction
     
-    // Stage 1: Conflict Checker (now with feedback)
+    // Stage 1: Conflict Checker
     conflict_checker conflict_check_stage (
         .clk(clk),
         .rst_n(rst_n),
@@ -43,7 +43,7 @@ module top (
         .transaction_forwarded(transaction_forwarded)
     );
 
-    // Stage 2: Filter Engine (now with feedback)
+    // Stage 2: Filter Engine 
     filter_engine filter_stage (
         .clk(clk),
         .rst_n(rst_n),

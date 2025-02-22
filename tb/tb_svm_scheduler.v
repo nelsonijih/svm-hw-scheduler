@@ -115,6 +115,8 @@ module tb_svm_scheduler();
             @(posedge clk);
             owner_programID = prog_id;
             transaction_valid = 1;
+            @(posedge clk);  
+            transaction_valid = 0;  
             wait_for_acceptance();
             if (has_conflict) begin
                 $display("\n[CONFLICT] Transaction %h blocked due to dependency conflict", prog_id);
@@ -159,7 +161,7 @@ module tb_svm_scheduler();
         // Transaction1 - create a write dep to address 5
         $display("\nTest Case 1: RAW Hazard");
         clear_dependencies();
-        set_dependency(2,5,0);
+        set_dependency(2,5,0); //insert into the write_dependency(i.e 0=write, 1=read) array at index 2, the address/account# 5
         submit_transaction(64'd1); //tx1
         //Transaction 2: create a read dep to address 5 and should cause conflict.
         $display("\nTest Case 1: Tx to trigger RAW harzard detection");
@@ -204,9 +206,8 @@ module tb_svm_scheduler();
       
         $display("\nTest Case 6: Transaction");
         clear_dependencies();
-        set_write_dependency(11);  // No conflict read
+        set_write_dependency(11);
         submit_transaction(64'd1234); //tx9
-       
         $display("\nTest Case 6: Transaction ");
         clear_dependencies();
         set_write_dependency(11);  // Write dependency causing conflict.

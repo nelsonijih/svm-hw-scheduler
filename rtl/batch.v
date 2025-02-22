@@ -46,37 +46,47 @@ module batch (
             inserted_programID <= 64'd0;
             batch_update_valid <= 1'b0;
             batch_update_id <= 64'd0;
-            accepted_id <= 64'd0;
             
-            if (insertion_ready && !processing_transaction && batch_size < MAX_BATCH_SIZE) begin
+            if (has_conflict) begin
+                // On conflict, immediately reset processing state
+                processing_transaction <= 1'b0;
+                pipeline_ready <= 1'b1;
+                accepted_id <= 64'd0;
+            end
+            else if (insertion_ready && !processing_transaction && batch_size < MAX_BATCH_SIZE) begin
                 processing_transaction <= 1'b1;
                 pipeline_ready <= 1'b0;
                 
-                if (!has_conflict) begin
-                    // Only process and signal non-conflicting transactions
-                    batch_transactions[batch_size] <= owner_programID;
-                    batch_size <= batch_size + 1'b1;
-                    
-                    // Signal successful insertion
-                    transaction_accepted <= 1'b1;
-                    inserted_programID <= owner_programID;
-                    
-                    // Update filter engine
-                    batch_update_valid <= 1'b1;
-                    batch_update_id <= owner_programID;
-                    
-                    // Signal accepted transaction
-                    accepted_id <= owner_programID;
-                end
+                // Process non-conflicting transaction
+                batch_transactions[batch_size] <= owner_programID;
+                batch_size <= batch_size + 1'b1;
+                
+                // Signal successful insertion
+                transaction_accepted <= 1'b1;
+                inserted_programID <= owner_programID;
+                accepted_id <= owner_programID;
+                
+                // Update filter engine
+                batch_update_valid <= 1'b1;
+                batch_update_id <= owner_programID;
             end
             else if (processing_transaction) begin
                 // Reset processing state and allow next transaction
                 processing_transaction <= 1'b0;
                 pipeline_ready <= 1'b1;
+                
+                // Keep accepted_id stable for one more cycle if it was set
+                if (transaction_accepted) begin
+                    accepted_id <= inserted_programID;
+                end
+                else begin
+                    accepted_id <= 64'd0;
+                end
             end
             else begin
-                // When idle, keep pipeline ready
+                // When idle, keep pipeline ready and clear accepted_id
                 pipeline_ready <= 1'b1;
+                accepted_id <= 64'd0;
             end
         end
     end

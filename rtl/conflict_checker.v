@@ -34,23 +34,20 @@ module conflict_checker (
             current_transaction_id <= 64'd0;
         end
         else begin
-            if (pipeline_ready) begin
-                // Pipeline is ready for new transaction
-                waiting_for_acceptance <= 1'b0;
-                
-                if (transaction_valid && !waiting_for_acceptance) begin
-                    // Forward new transaction
-                    transaction_forwarded <= 1'b1;
-                    waiting_for_acceptance <= 1'b1;
-                    current_transaction_id <= owner_programID;
-                end
-                else begin
-                    transaction_forwarded <= 1'b0;
+            // Default state
+            transaction_forwarded <= 1'b0;
+            
+            if (waiting_for_acceptance) begin
+                // Clear waiting state if transaction accepted or conflict detected
+                if ((accepted_id == current_transaction_id) || has_conflict) begin
+                    waiting_for_acceptance <= 1'b0;
                 end
             end
-            else begin
-                // Hold current state while waiting
-                transaction_forwarded <= 1'b0;
+            else if (pipeline_ready && transaction_valid) begin
+                // Only forward new transaction when we get a valid transaction
+                transaction_forwarded <= 1'b1;
+                waiting_for_acceptance <= 1'b1;
+                current_transaction_id <= owner_programID;
             end
         end
     end

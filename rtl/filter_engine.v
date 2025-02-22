@@ -70,70 +70,77 @@ module filter_engine (
             // Default values
             filter_ready <= 1'b0;
             
-            if (pipeline_ready) begin
-                if (transaction_forwarded) begin
-                    // Store the dependencies for this transaction
-                    current_transaction_id <= owner_programID;
-                    current_read_deps <= read_dependencies;
-                    current_write_deps <= write_dependencies;
-                    waiting_for_acceptance <= 1'b1;
-                    
-                    // Clear conflict flag before checking
-                    has_conflict <= 1'b0;
-                    conflicting_id <= 64'd0;
-                    
-                    // Check against dependency tables
-                    for (i = 0; i < table_size; i = i + 1) begin
-                        for (j = 0; j < DEPS_PER_TRANSACTION; j = j + 1) begin
+            if (transaction_forwarded && pipeline_ready) begin
+                // Store the dependencies for this transaction
+                current_transaction_id <= owner_programID;
+                current_read_deps <= read_dependencies;
+                current_write_deps <= write_dependencies;
+                waiting_for_acceptance <= 1'b1;
+                
+                // Clear conflict flag before checking
+                has_conflict <= 1'b0;
+                conflicting_id <= 64'd0;
+                
+                // Check for conflicts
+                for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
+                    if (read_dependencies[i*64 +: 64] != 0 || write_dependencies[i*64 +: 64] != 0) begin
+                        for (j = 0; j < table_size; j = j + 1) begin
                             // Check read-write conflicts (current read vs existing writes)
-                            if (read_dependencies[j*64 +: 64] == write_dependency_table[i] && 
-                                read_dependencies[j*64 +: 64] != 0) begin
+                            if (read_dependencies[i*64 +: 64] != 0 && 
+                                read_dependencies[i*64 +: 64] == write_dependency_table[j]) begin
                                 has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[i];
+                                conflicting_id <= owner_table[j];
                             end
                             // Check write-write conflicts
-                            if (write_dependencies[j*64 +: 64] == write_dependency_table[i] && 
-                                write_dependencies[j*64 +: 64] != 0) begin
+                            if (write_dependencies[i*64 +: 64] != 0 && 
+                                write_dependencies[i*64 +: 64] == write_dependency_table[j]) begin
                                 has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[i];
+                                conflicting_id <= owner_table[j];
                             end
                             // Check write-read conflicts (current write vs existing reads)
-                            if (write_dependencies[j*64 +: 64] == read_dependency_table[i] && 
-                                write_dependencies[j*64 +: 64] != 0) begin
+                            if (write_dependencies[i*64 +: 64] != 0 && 
+                                write_dependencies[i*64 +: 64] == read_dependency_table[j]) begin
                                 has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[i];
+                                conflicting_id <= owner_table[j];
                             end
                         end
                     end
-                    
-                    // Only set filter_ready if no conflicts found
-                    filter_ready <= !has_conflict;
                 end
-                else begin
-                    // Reset state when no transaction
-                    waiting_for_acceptance <= 1'b0;
-                    has_conflict <= 1'b0;
-                    conflicting_id <= 64'd0;
-                end
+                
+                // Set filter_ready if no conflicts found
+                filter_ready <= !has_conflict;
             end
-            else if (waiting_for_acceptance && !has_conflict && accepted_id == current_transaction_id) begin
-                // Only update tables if transaction was accepted and had no conflicts
-                if (table_size < TABLE_SIZE) begin
-                    for (j = 0; j < DEPS_PER_TRANSACTION; j = j + 1) begin
-                        // Only store non-zero dependencies
-                        if (current_read_deps[j*64 +: 64] != 64'd0) begin
-                            read_dependency_table[table_size] <= current_read_deps[j*64 +: 64];
-                            owner_table[table_size] <= current_transaction_id;
-                            table_size <= table_size + 1'b1;
+            else if (waiting_for_acceptance) begin
+                if (has_conflict) begin
+                    // If conflict detected, clear waiting state immediately
+                    waiting_for_acceptance <= 1'b0;
+                    filter_ready <= 1'b0;
+                end
+                else if (accepted_id == current_transaction_id) begin
+                    // Transaction was accepted, update tables
+                    for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
+                        if (current_read_deps[i*64 +: 64] != 0) begin
+                            if (table_size < TABLE_SIZE) begin
+                                read_dependency_table[table_size] <= current_read_deps[i*64 +: 64];
+                                owner_table[table_size] <= current_transaction_id;
+                                table_size <= table_size + 1;
+                            end
                         end
-                        if (current_write_deps[j*64 +: 64] != 64'd0) begin
-                            write_dependency_table[table_size] <= current_write_deps[j*64 +: 64];
-                            owner_table[table_size] <= current_transaction_id;
-                            table_size <= table_size + 1'b1;
+                        if (current_write_deps[i*64 +: 64] != 0) begin
+                            if (table_size < TABLE_SIZE) begin
+                                write_dependency_table[table_size] <= current_write_deps[i*64 +: 64];
+                                owner_table[table_size] <= current_transaction_id;
+                                table_size <= table_size + 1;
+                            end
                         end
                     end
+                    waiting_for_acceptance <= 1'b0;
                 end
-                waiting_for_acceptance <= 1'b0;
+            end
+            else begin
+                // When not processing, clear conflict flags
+                has_conflict <= 1'b0;
+                conflicting_id <= 64'd0;
             end
         end
     end
