@@ -33,12 +33,18 @@ module filter_engine (
     parameter DEPS_PER_TRANSACTION = 1024;
     parameter TABLE_SIZE = MAX_TRANSACTIONS * DEPS_PER_TRANSACTION;
     parameter TABLE_INDEX_BITS = 16;  // table_size
+    parameter ACCOUNT_ID_WIDTH = 64;  // Width of account/program IDs
 
-    // Dependency tables
-    reg [63:0] read_dependency_table [TABLE_SIZE-1:0];   // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
-    reg [63:0] write_dependency_table [TABLE_SIZE-1:0];  // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
-    reg [63:0] owner_table [TABLE_SIZE-1:0];            // Store owner ID for each dependency
-    reg [TABLE_INDEX_BITS-1:0] table_size;    // Current size of tables
+    // Synthesis-friendly constants for loops
+    localparam MAX_TX_DEPENDENCIES = DEPS_PER_TRANSACTION;
+    localparam MAX_BATCH_TX = MAX_TRANSACTIONS;
+    localparam TOTAL_TABLE_SIZE = MAX_BATCH_TX * MAX_TX_DEPENDENCIES;
+
+    // Batch Dependency tables for all tx in the batch
+    reg [63:0] read_dependency_table [TOTAL_TABLE_SIZE-1:0];   // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
+    reg [63:0] write_dependency_table [TOTAL_TABLE_SIZE-1:0];  // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
+    reg [63:0] owner_table [TOTAL_TABLE_SIZE-1:0];            // Store owner ID for each dependency
+    reg [TABLE_INDEX_BITS-1:0] table_size;    // Current size of tables - keep track of how much space we have used.
     
     // Pipeline state
     reg waiting_for_acceptance;
@@ -60,7 +66,7 @@ module filter_engine (
             filter_ready <= 1'b0;
             has_conflict <= 1'b0;
             conflicting_id <= 64'd0;
-            for (i = 0; i < TABLE_SIZE; i = i + 1) begin
+            for (i = 0; i < TOTAL_TABLE_SIZE; i = i + 1) begin
                 read_dependency_table[i] <= 64'd0;
                 write_dependency_table[i] <= 64'd0;
                 owner_table[i] <= 64'd0;
@@ -82,26 +88,30 @@ module filter_engine (
                 conflicting_id <= 64'd0;
                 
                 // Check for conflicts
-                for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
-                    if (read_dependencies[i*64 +: 64] != 0 || write_dependencies[i*64 +: 64] != 0) begin
-                        for (j = 0; j < table_size; j = j + 1) begin
-                            // Check read-write conflicts (current read vs existing writes)
-                            if (read_dependencies[i*64 +: 64] != 0 && 
-                                read_dependencies[i*64 +: 64] == write_dependency_table[j]) begin
-                                has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[j];
-                            end
-                            // Check write-write conflicts
-                            if (write_dependencies[i*64 +: 64] != 0 && 
-                                write_dependencies[i*64 +: 64] == write_dependency_table[j]) begin
-                                has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[j];
-                            end
-                            // Check write-read conflicts (current write vs existing reads)
-                            if (write_dependencies[i*64 +: 64] != 0 && 
-                                write_dependencies[i*64 +: 64] == read_dependency_table[j]) begin
-                                has_conflict <= 1'b1;
-                                conflicting_id <= owner_table[j];
+                for (i = 0; i < MAX_TX_DEPENDENCIES; i = i + 1) begin
+                    if (read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 || 
+                        write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0) begin
+                        for (j = 0; j < MAX_BATCH_TX; j = j + 1) begin  
+                            // Only check if j is less than current table_size
+                            if (j < table_size) begin
+                                // Check read-write conflicts (current read vs existing writes)
+                                if (read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
+                                    read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == write_dependency_table[j]) begin
+                                    has_conflict <= 1'b1;
+                                    conflicting_id <= owner_table[j];
+                                end
+                                // Check write-write conflicts
+                                if (write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
+                                    write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == write_dependency_table[j]) begin
+                                    has_conflict <= 1'b1;
+                                    conflicting_id <= owner_table[j];
+                                end
+                                // Check write-read conflicts (current write vs existing reads)
+                                if (write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
+                                    write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == read_dependency_table[j]) begin
+                                    has_conflict <= 1'b1;
+                                    conflicting_id <= owner_table[j];
+                                end
                             end
                         end
                     end
@@ -118,16 +128,16 @@ module filter_engine (
                 end
                 else if (accepted_id == current_transaction_id) begin
                     // Transaction was accepted, update tables
-                    for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
+                    for (i = 0; i < MAX_TX_DEPENDENCIES; i = i + 1) begin
                         if (current_read_deps[i*64 +: 64] != 0) begin
-                            if (table_size < TABLE_SIZE) begin
+                            if (table_size < TOTAL_TABLE_SIZE) begin
                                 read_dependency_table[table_size] <= current_read_deps[i*64 +: 64];
                                 owner_table[table_size] <= current_transaction_id;
                                 table_size <= table_size + 1;
                             end
                         end
                         if (current_write_deps[i*64 +: 64] != 0) begin
-                            if (table_size < TABLE_SIZE) begin
+                            if (table_size < TOTAL_TABLE_SIZE) begin
                                 write_dependency_table[table_size] <= current_write_deps[i*64 +: 64];
                                 owner_table[table_size] <= current_transaction_id;
                                 table_size <= table_size + 1;
@@ -138,7 +148,7 @@ module filter_engine (
                 end
             end
             else begin
-                // When not processing, clear conflict flags
+                // When not processing make sure the clear conflict flags
                 has_conflict <= 1'b0;
                 conflicting_id <= 64'd0;
             end

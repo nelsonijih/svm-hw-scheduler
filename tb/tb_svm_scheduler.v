@@ -84,7 +84,7 @@ module tb_svm_scheduler();
             if (has_conflict) begin
                 $display("Transaction CONFLICT detected! Conflicting with transaction ID: %h", conflicting_id);
             end else begin
-                $display("Transaction ACCEPTED! Inserted Program ID: %h", inserted_programID);
+                $display("Transaction ACCEPTED! Inserted Owner Account or Program ID: %h", inserted_programID);
             end
         end
     endtask

@@ -1,3 +1,7 @@
+////////////
+// Top-level module that instantiates all the stages pipeline and connect them together for the SVM Hardware Scheduler
+////////////
+
 module top (
     input wire clk,
     input wire rst_n,
@@ -60,7 +64,7 @@ module top (
         .conflicting_id(filter_conflicting_id)
     );
 
-    // Stage 3: Insertion Logic (now with feedback)
+    // Stage 3: Insertion Logic
     insertion insertion_stage (
         .clk(clk),
         .rst_n(rst_n),
@@ -71,7 +75,7 @@ module top (
         .insertion_ready(insertion_ready)
     );
 
-    // Stage 4: Batch Storage (now generates feedback)
+    // Stage 4: Batch Storage 
     batch batch_stage (
         .clk(clk),
         .rst_n(rst_n),
