@@ -1,92 +1,166 @@
-module batch (
+module batch #(
+    parameter MAX_BATCH_SIZE = 8,
+    parameter BATCH_TIMEOUT_CYCLES = 100
+) (
     input wire clk,
     input wire rst_n,
     
-    // Input from insertion stage
-    input wire insertion_ready,
-    input wire [63:0] owner_programID,
-    input wire has_conflict,  // get go ahead from filter to batch inclusion.
+    // AXI-Stream input interface
+    input wire s_axis_tvalid,
+    output reg s_axis_tready,
+    input wire [63:0] s_axis_tdata_owner_programID,
+    input wire [1023:0] s_axis_tdata_read_dependencies,
+    input wire [1023:0] s_axis_tdata_write_dependencies,
     
-    // Output signals
-    output reg transaction_accepted,
-    output reg [63:0] inserted_programID,
+    // AXI-Stream output interface
+    output reg m_axis_tvalid,
+    input wire m_axis_tready,
+    output reg [63:0] m_axis_tdata_owner_programID,
+    output reg [1023:0] m_axis_tdata_read_dependencies,
+    output reg [1023:0] m_axis_tdata_write_dependencies,
     
-    // Feedback signals to all stages
-    output reg batch_update_valid,
-    output reg [63:0] batch_update_id,
-    output reg pipeline_ready,
-    output reg [63:0] accepted_id
+    // Batch completion signal
+    output reg batch_completed,
+    
+    // Performance monitoring
+    output reg [31:0] transactions_processed
 );
 
-    // Parameters for batch configuration
-    parameter MAX_BATCH_SIZE = 48;  // Max TXs per batch
-    parameter BATCH_INDEX_BITS = 6;  
-
+    // FSM states
+    localparam IDLE = 2'b00;
+    localparam COLLECT = 2'b01;
+    localparam OUTPUT = 2'b10;
+    reg [1:0] state;
+    
     // Batch storage
-    reg [63:0] batch_transactions [MAX_BATCH_SIZE-1:0];  // Each entry is a 64-bit program ID
-    reg [BATCH_INDEX_BITS-1:0] batch_size;  // Current number of transactions in batch
-
-    // Pipeline state
-    reg processing_transaction;
-
+    reg [63:0] batch_owner_programID [0:MAX_BATCH_SIZE-1];
+    reg [1023:0] batch_read_deps [0:MAX_BATCH_SIZE-1];
+    reg [1023:0] batch_write_deps [0:MAX_BATCH_SIZE-1];
+    reg [3:0] batch_count;
+    reg [3:0] output_index;
+    
+    // Timeout counter
+    reg [31:0] timeout_counter;
+    
+    // Debug counter
+    reg [31:0] debug_cycles;
+    
+    // Main control logic
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            transaction_accepted <= 1'b0;
-            inserted_programID <= 64'd0;
-            batch_update_valid <= 1'b0;
-            batch_update_id <= 64'd0;
-            pipeline_ready <= 1'b1;
-            accepted_id <= 64'd0;
-            batch_size <= {BATCH_INDEX_BITS{1'b0}};
-            processing_transaction <= 1'b0;
+            state <= IDLE;
+            s_axis_tready <= 1'b1;
+            m_axis_tvalid <= 1'b0;
+            m_axis_tdata_owner_programID <= 64'd0;
+            m_axis_tdata_read_dependencies <= 1024'd0;
+            m_axis_tdata_write_dependencies <= 1024'd0;
+            
+            batch_count <= 4'd0;
+            output_index <= 4'd0;
+            timeout_counter <= 32'd0;
+            transactions_processed <= 32'd0;
+            debug_cycles <= 32'd0;
+            batch_completed <= 1'b0;
         end
         else begin
-            // Default values - reset all signals unless explicitly set
-            transaction_accepted <= 1'b0;
-            inserted_programID <= 64'd0;
-            batch_update_valid <= 1'b0;
-            batch_update_id <= 64'd0;
+            // Increment debug counter
+            debug_cycles <= debug_cycles + 1'b1;
             
-            if (has_conflict) begin
-                // On conflict, immediately reset processing state
-                processing_transaction <= 1'b0;
-                pipeline_ready <= 1'b1;
-                accepted_id <= 64'd0;
-            end
-            else if (insertion_ready && !processing_transaction && batch_size < MAX_BATCH_SIZE) begin
-                processing_transaction <= 1'b1;
-                pipeline_ready <= 1'b0;
-                
-                // Process non-conflicting transaction
-                batch_transactions[batch_size] <= owner_programID;
-                batch_size <= batch_size + 1'b1;
-                
-                // Signal successful insertion
-                transaction_accepted <= 1'b1;
-                inserted_programID <= owner_programID;
-                accepted_id <= owner_programID;
-                
-                // Update filter engine
-                batch_update_valid <= 1'b1;
-                batch_update_id <= owner_programID;
-            end
-            else if (processing_transaction) begin
-                // Reset processing state and allow next transaction
-                processing_transaction <= 1'b0;
-                pipeline_ready <= 1'b1;
-                
-                // Keep accepted_id stable for one more cycle if it was set
-                if (transaction_accepted) begin
-                    accepted_id <= inserted_programID;
+            // Default assignments
+            s_axis_tready <= 1'b0;
+            batch_completed <= 1'b0; // Default to not completed
+            
+            case (state)
+                IDLE: begin
+                    // Reset batch state for a new batch
+                    batch_count <= 4'd0;
+                    output_index <= 4'd0;
+                    timeout_counter <= 32'd0;
+                    
+                    // Ready to accept new transaction
+                    s_axis_tready <= 1'b1;
+                    m_axis_tvalid <= 1'b0;
+                    
+                    if (s_axis_tvalid && s_axis_tready) begin
+                        // Store first transaction
+                        batch_owner_programID[0] <= s_axis_tdata_owner_programID;
+                        batch_read_deps[0] <= s_axis_tdata_read_dependencies;
+                        batch_write_deps[0] <= s_axis_tdata_write_dependencies;
+                        
+                        batch_count <= 4'd1;
+                        state <= COLLECT;
+                    end
                 end
-                else begin
-                    accepted_id <= 64'd0;
+                
+                COLLECT: begin
+                    // Increment timeout counter
+                    timeout_counter <= timeout_counter + 1'b1;
+                    
+                    // Accept new transactions until batch is full or timeout
+                    s_axis_tready <= (batch_count < MAX_BATCH_SIZE);
+                    
+                    if (s_axis_tvalid && s_axis_tready) begin
+                        // Store transaction in batch
+                        batch_owner_programID[batch_count] <= s_axis_tdata_owner_programID;
+                        batch_read_deps[batch_count] <= s_axis_tdata_read_dependencies;
+                        batch_write_deps[batch_count] <= s_axis_tdata_write_dependencies;
+                        
+                        batch_count <= batch_count + 1'b1;
+                        timeout_counter <= 32'd0;
+                        
+                        // If batch is full, start outputting
+                        if (batch_count == MAX_BATCH_SIZE - 1) begin
+                            state <= OUTPUT;
+                            output_index <= 4'd0;
+                        end
+                    end
+                    else if (timeout_counter >= BATCH_TIMEOUT_CYCLES && batch_count > 0) begin
+                        // Timeout reached with transactions in batch
+                        state <= OUTPUT;
+                        output_index <= 4'd0;
+                    end
                 end
-            end
-            else begin
-                // When idle, keep pipeline ready and clear accepted_id
-                pipeline_ready <= 1'b1;
-                accepted_id <= 64'd0;
+                
+                OUTPUT: begin
+                    // Output transactions one by one
+                    m_axis_tvalid <= 1'b1;
+                    m_axis_tdata_owner_programID <= batch_owner_programID[output_index];
+                    m_axis_tdata_read_dependencies <= batch_read_deps[output_index];
+                    m_axis_tdata_write_dependencies <= batch_write_deps[output_index];
+                    
+                    if (m_axis_tready) begin
+                        // Transaction accepted
+                        transactions_processed <= transactions_processed + 1'b1;
+                        
+                        if (output_index == batch_count - 1) begin
+                            // All transactions in batch have been output
+                            m_axis_tvalid <= 1'b0;
+                            state <= IDLE;
+                            s_axis_tready <= 1'b1;
+                            
+                            // Signal batch completion
+                            batch_completed <= 1'b1;
+                            $display("Batch completed at time %0t - Signaling completion", $time);
+                        end
+                        else begin
+                            // Move to next transaction in batch
+                            output_index <= output_index + 1'b1;
+                        end
+                    end
+                end
+                
+                default: begin
+                    state <= IDLE;
+                    s_axis_tready <= 1'b1;
+                end
+            endcase
+            
+            // Safety timeout - if stuck for too long, reset state
+            if (debug_cycles > 1000) begin
+                state <= IDLE;
+                s_axis_tready <= 1'b1;
+                m_axis_tvalid <= 1'b0;
+                debug_cycles <= 32'd0;
             end
         end
     end

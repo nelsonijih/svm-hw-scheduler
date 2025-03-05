@@ -4,230 +4,325 @@
 
 `timescale 1ns/1ps
 
-module tb_svm_scheduler();
-    // Params for the design.
-    parameter MAX_TRANSACTIONS = 48;
-    parameter DEPS_PER_TRANSACTION = 1024;
-    parameter TABLE_SIZE = MAX_TRANSACTIONS * DEPS_PER_TRANSACTION;
+module tb_svm_scheduler;
+
+    // Parameters
+    parameter MAX_DEPENDENCIES = 1024;
+    parameter MAX_BATCH_SIZE = 8;
+    parameter BATCH_TIMEOUT_CYCLES = 100;
+    parameter MAX_PENDING_TRANSACTIONS = 16;
+    parameter INSERTION_QUEUE_DEPTH = 8;
+    parameter SIM_TIMEOUT = 10000; // Simulation timeout in clock cycles
     
-    // test bench variables
-    integer i;
-    integer wait_cycles;
-    
-    //Clk and rst sigs
+    // Clock and reset
     reg clk;
     reg rst_n;
     
-    // Test inputs
-    reg [63:0] owner_programID;
-    reg [DEPS_PER_TRANSACTION*64-1:0] read_dependencies;
-    reg [DEPS_PER_TRANSACTION*64-1:0] write_dependencies;
-    reg transaction_valid;
+    // AXI-Stream input interface
+    reg s_axis_tvalid;
+    wire s_axis_tready;
+    reg [63:0] s_axis_tdata_owner_programID;
+    reg [1023:0] s_axis_tdata_read_dependencies;
+    reg [1023:0] s_axis_tdata_write_dependencies;
     
-    // Test outputs
-    wire transaction_accepted;
-    wire [63:0] inserted_programID;
-    wire has_conflict;
-    wire [63:0] conflicting_id;
+    // AXI-Stream output interface
+    wire m_axis_tvalid;
+    reg m_axis_tready;
+    wire [63:0] m_axis_tdata_owner_programID;
+    wire [1023:0] m_axis_tdata_read_dependencies;
+    wire [1023:0] m_axis_tdata_write_dependencies;
     
-    // continous clock gen to drive design.
-    initial begin
-        clk = 0;
-        forever #5 clk = ~clk; // 10ns period.
-    end
+    // Performance monitoring
+    wire [31:0] raw_conflicts;
+    wire [31:0] waw_conflicts;
+    wire [31:0] war_conflicts;
+    wire [31:0] filter_hits;
+    wire [31:0] queue_occupancy;
+    wire [31:0] transactions_processed;
+    
+    // Simulation timeout counter
+    reg [31:0] timeout_counter;
     
     // Instantiate the top module
-    top svm_hw_scheduler (
+    top #(
+        .MAX_DEPENDENCIES(MAX_DEPENDENCIES),
+        .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
+        .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES),
+        .MAX_PENDING_TRANSACTIONS(MAX_PENDING_TRANSACTIONS),
+        .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH)
+    ) svm_scheduler (
         .clk(clk),
         .rst_n(rst_n),
-        .owner_programID(owner_programID),
-        .read_dependencies(read_dependencies),
-        .write_dependencies(write_dependencies),
-        .transaction_valid(transaction_valid),
-        .transaction_accepted(transaction_accepted),
-        .inserted_programID(inserted_programID),
-        .has_conflict(has_conflict),
-        .conflicting_id(conflicting_id)
+        .s_axis_tvalid(s_axis_tvalid),
+        .s_axis_tready(s_axis_tready),
+        .s_axis_tdata_owner_programID(s_axis_tdata_owner_programID),
+        .s_axis_tdata_read_dependencies(s_axis_tdata_read_dependencies),
+        .s_axis_tdata_write_dependencies(s_axis_tdata_write_dependencies),
+        .m_axis_tvalid(m_axis_tvalid),
+        .m_axis_tready(m_axis_tready),
+        .m_axis_tdata_owner_programID(m_axis_tdata_owner_programID),
+        .m_axis_tdata_read_dependencies(m_axis_tdata_read_dependencies),
+        .m_axis_tdata_write_dependencies(m_axis_tdata_write_dependencies),
+        .raw_conflicts(raw_conflicts),
+        .waw_conflicts(waw_conflicts),
+        .war_conflicts(war_conflicts),
+        .filter_hits(filter_hits),
+        .queue_occupancy(queue_occupancy),
+        .transactions_processed(transactions_processed)
     );
     
-    // Init dependencies to zero
-    task clear_dependencies;
-        begin
-            read_dependencies = 0;
-            write_dependencies = 0;
-        end
-    endtask
+    // Clock generation
+    initial begin
+        clk = 0;
+        forever #(10/2) clk = ~clk;
+    end
     
-    // Setting read_dep for testing purposes.
-    task set_read_dependency;
-        input [63:0] addr;
-        begin
-            read_dependencies[addr] = 1'b1;
+    // Simulation timeout
+    always @(posedge clk) begin
+        if (timeout_counter >= SIM_TIMEOUT) begin
+            $display("Simulation timeout reached at %0t", $time);
+            $display("Debug info:");
+            $display("  s_axis_tvalid = %b, s_axis_tready = %b", s_axis_tvalid, s_axis_tready);
+            $display("  m_axis_tvalid = %b, m_axis_tready = %b", m_axis_tvalid, m_axis_tready);
+            $display("  raw_conflicts = %0d", raw_conflicts);
+            $display("  waw_conflicts = %0d", waw_conflicts);
+            $display("  war_conflicts = %0d", war_conflicts);
+            $display("  filter_hits = %0d", filter_hits);
+            $display("  queue_occupancy = %0d", queue_occupancy);
+            $display("  transactions_processed = %0d", transactions_processed);
+            $finish;
+        end else begin
+            timeout_counter <= timeout_counter + 1;
         end
-    endtask
-
-    // set bit in write_dep
-    task set_write_dependency;
-        input [63:0] addr;
-        begin
-            write_dependencies[addr] = 1'b1;
-        end
-    endtask
-
-    //Wait for transaction acceptance or conflict task.
-    task wait_for_acceptance;
-        begin
-            @(posedge clk);
-            while (!transaction_accepted && !has_conflict) begin
-                @(posedge clk);
-            end
-            if (has_conflict) begin
-                $display("Transaction CONFLICT detected! Conflicting with transaction ID: %h", conflicting_id);
-            end else begin
-                $display("Transaction ACCEPTED! Inserted Owner Account or Program ID: %h", inserted_programID);
-            end
-        end
-    endtask
-
-    // Task to display dependency info
-    task display_dependencies;
-        input [63:0] prog_id;
-        integer i;
-        begin
-            $display("Transaction %h Details:", prog_id);
-            $display("  Read Dependencies:");
-            for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
-                if (read_dependencies[i*64 +: 64] != 0)
-                    $display("    - Address %0d", i);
-            end
-            $display("  Write Dependencies:");
-            for (i = 0; i < DEPS_PER_TRANSACTION; i = i + 1) begin
-                if (write_dependencies[i*64 +: 64] != 0)
-                    $display("    - Address %0d", i);
-            end
-        end
-    endtask
-
-    // Task to submit transaction and wait for acceptance
+    end
+    
+    // Task to submit a transaction
     task submit_transaction;
-        input [63:0] prog_id;
+        input [63:0] owner_programID;
+        input [1023:0] read_dependencies;
+        input [1023:0] write_dependencies;
         begin
+            // Wait for ready
+            wait(s_axis_tready);
+            
+            // Submit transaction
             @(posedge clk);
-            owner_programID = prog_id;
-            transaction_valid = 1;
-            @(posedge clk);  
-            transaction_valid = 0;  
-            wait_for_acceptance();
-            if (has_conflict) begin
-                $display("\n[CONFLICT] Transaction %h blocked due to dependency conflict", prog_id);
-                display_dependencies(prog_id);
-                $display("----------------------------------------");
-            end
-            else
-                $display("[ACCEPTED] Transaction %h accepted", prog_id);
-        end
-    endtask
-
-    // Task to set a specific dependency
-    task set_dependency;
-        input [9:0] index;
-        input [63:0] value;
-        input is_read;
-        begin
-            if (is_read) begin
-                read_dependencies[index*64 +: 64] = value;
-            end else begin
-                write_dependencies[index*64 +: 64] = value;
-            end
+            s_axis_tvalid = 1;
+            s_axis_tdata_owner_programID = owner_programID;
+            s_axis_tdata_read_dependencies = read_dependencies;
+            s_axis_tdata_write_dependencies = write_dependencies;
+            
+            // Wait for handshake
+            @(posedge clk);
+            while (!s_axis_tready) @(posedge clk);
+            
+            // Deassert valid
+            s_axis_tvalid = 0;
         end
     endtask
     
     // Test stimulus
     initial begin
-        // Initialize waveform dumping
-        $dumpfile("svm_scheduler.vcd");
+        // Initialize signals
+        s_axis_tvalid = 0;
+        s_axis_tdata_owner_programID = 0;
+        s_axis_tdata_read_dependencies = 0;
+        s_axis_tdata_write_dependencies = 0;
+        m_axis_tready = 1;
+        timeout_counter = 0;
+        
+        // Set up VCD dumping
+        $dumpfile("build/waves.vcd");
         $dumpvars(0, tb_svm_scheduler);
         
-        // Initialize inputs
+        // Reset
         rst_n = 0;
-        transaction_valid = 0;
-        owner_programID = 0;
-        clear_dependencies();
+        repeat(5) @(posedge clk);
+        rst_n = 1;
         
-        // Wait 100ns and release reset
-        #100 rst_n = 1;
+        // Wait for stabilization
+        repeat(10) @(posedge clk);
         
-        // Test1 to test RAW Hazard
-        // Transaction1 - create a write dep to address 5
-        $display("\nTest Case 1: RAW Hazard");
-        clear_dependencies();
-        set_dependency(2,5,0); //insert into the write_dependency(i.e 0=write, 1=read) array at index 2, the address/account# 5
-        submit_transaction(64'd1); //tx1
-        //Transaction 2: create a read dep to address 5 and should cause conflict.
-        $display("\nTest Case 1: Tx to trigger RAW harzard detection");
-        clear_dependencies();
-        set_dependency(10,5, 1);
-        submit_transaction(64'd2); //tx2
+        // Test Case 1: Non-conflicting transactions
+        $display("\nTest Case 1: Non-conflicting transactions");
+        $display("Submitting 3 transactions with unique dependencies");
         
-        //Test Case 2: WAW Hazard
-        //Transaction 3: creat a write_dep to address 10
-        $display("\nTest Case 2: WAW Hazard");
-        clear_dependencies();
-        set_dependency(12,10,0);
-        submit_transaction(64'd3); //tx3
-        // Transaction4: create a write_dep to write to address 10 (should be blocked)
-        $display("\nTest Case 2: Tx to trigger WAW harzard detection");
-        clear_dependencies();
-        set_dependency(15,10,0);
-        submit_transaction(64'd4); //tx4
+        // Transaction 1: Read from region 0, write to region 1
+        $display("Submitting transaction 1 at time %0t", $time);
+        submit_transaction(
+            64'h1,
+            1024'h1,  // Read from region 0
+            1024'h2   // Write to region 1
+        );
+        repeat(10) @(posedge clk);
         
-        // Test Case 3: WAR Hazard
-        // Transaction5 - create a read_dep from address 15
-        $display("\nTest Case 3: WAR Hazard");
-        clear_dependencies();
-        set_read_dependency(15);
-        submit_transaction(64'd5); //tx5
-        // Transaction6- set write_dep to address 15 and should cause conflict.
-        $display("\nTest Case 3: Tx to trigger WAR harzard detection");
-        clear_dependencies();
-        set_write_dependency(15);
-        submit_transaction(64'd6); //tx6
+        // Transaction 2: Read from region 2, write to region 3
+        $display("Submitting transaction 2 at time %0t", $time);
+        submit_transaction(
+            64'h2,
+            1024'h4,  // Read from region 2
+            1024'h8   // Write to region 3
+        );
+        repeat(10) @(posedge clk);
         
-        // Test Case 4: Non-conflicting tx
-        $display("\nTest Case 4:Non-conflicting tx");
-        clear_dependencies();
-        submit_transaction(64'd6); //tx7
+        // Transaction 3: Read from region 4, write to region 5
+        $display("Submitting transaction 3 at time %0t", $time);
+        submit_transaction(
+            64'h3,
+            1024'h10,  // Read from region 4
+            1024'h20   // Write to region 5
+        );
+        repeat(10) @(posedge clk);
         
-        // Test Case 4: Simple transaction without dependencies
-        $display("\nTest Case 5: Non conficting tx");
-        clear_dependencies();
-        submit_transaction(64'd11); //tx8
+        // Test Case 2: RAW (Read-After-Write) conflicts
+        $display("\nTest Case 2: RAW (Read-After-Write) conflicts");
+        $display("Submitting 3 transactions with RAW conflicts");
         
-      
-        $display("\nTest Case 6: Transaction");
-        clear_dependencies();
-        set_write_dependency(11);
-        submit_transaction(64'd1234); //tx9
-        $display("\nTest Case 6: Transaction ");
-        clear_dependencies();
-        set_write_dependency(11);  // Write dependency causing conflict.
-        submit_transaction(64'd4321); //tx10
-
-        // Delay before finishing.
-        #100;
-        $finish;
-    end
-    
-    // Monitor pipeline stages
-    always @(posedge clk) begin
-        if (svm_hw_scheduler.filter_stage.filter_ready)
-            $display("Time %0t: Filter stage approved transaction %h", $time, svm_hw_scheduler.filter_stage.owner_programID);
-            
-        if (svm_hw_scheduler.insertion_stage.insertion_ready)
-            $display("Time %0t: Insertion stage ready with transaction %h", $time, svm_hw_scheduler.insertion_stage.owner_programID);
-            
-        if (transaction_accepted)
-            $display("Time %0t: Batch stage accepted transaction %h", $time, inserted_programID);
+        // Transaction 4: Write to region 6
+        submit_transaction(
+            64'h4,
+            1024'h0,     // No reads
+            1024'h40     // Write to region 6
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 5: Read from region 6 (RAW conflict)
+        submit_transaction(
+            64'h5,
+            1024'h40,    // Read from region 6
+            1024'h0      // No writes
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 6: Read from region 6 (RAW conflict)
+        submit_transaction(
+            64'h6,
+            1024'h40,    // Read from region 6
+            1024'h0      // No writes
+        );
+        repeat(10) @(posedge clk);
+        
+        // Test Case 3: Mixed conflicting and non-conflicting transactions
+        $display("\nTest Case 3: Mixed conflicting and non-conflicting transactions");
+        $display("Submitting 4 transactions alternating between conflict and no conflict");
+        
+        // Transaction 7: Write to region 7
+        submit_transaction(
+            64'h7,
+            1024'h0,     // No reads
+            1024'h80     // Write to region 7
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 8: Read from region 8 (no conflict)
+        submit_transaction(
+            64'h8,
+            1024'h100,   // Read from region 8
+            1024'h0      // No writes
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 9: Read from region 7 (RAW conflict)
+        submit_transaction(
+            64'h9,
+            1024'h80,    // Read from region 7
+            1024'h0      // No writes
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 10: Write to region 9 (no conflict)
+        submit_transaction(
+            64'h10,
+            1024'h0,     // No reads
+            1024'h200    // Write to region 9
+        );
+        repeat(10) @(posedge clk);
+        
+        // Test Case 4: WAW (Write-After-Write) conflicts
+        $display("\nTest Case 4: WAW (Write-After-Write) conflicts");
+        $display("Submitting transactions with WAW conflicts");
+        
+        // Transaction 11: Write to region 10
+        submit_transaction(
+            64'h11,
+            1024'h0,     // No reads
+            1024'h400    // Write to region 10
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 12: Write to region 10 (WAW conflict)
+        submit_transaction(
+            64'h12,
+            1024'h0,     // No reads
+            1024'h400    // Write to region 10 (conflicts with Transaction 11)
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 13: Write to region 11 (no conflict)
+        submit_transaction(
+            64'h13,
+            1024'h0,     // No reads
+            1024'h800    // Write to region 11
+        );
+        repeat(10) @(posedge clk);
+        
+        // Test Case 5: WAR (Write-After-Read) conflicts
+        $display("\nTest Case 5: WAR (Write-After-Read) conflicts");
+        $display("Submitting transactions with WAR conflicts");
+        
+        // Transaction 14: Read from region 12
+        submit_transaction(
+            64'h14,
+            1024'h1000,  // Read from region 12
+            1024'h0      // No writes
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 15: Write to region 12 (WAR conflict)
+        submit_transaction(
+            64'h15,
+            1024'h0,     // No reads
+            1024'h1000   // Write to region 12 (conflicts with Transaction 14 read)
+        );
+        repeat(10) @(posedge clk);
+        
+        // Test Case 6: Multiple conflict types
+        $display("\nTest Case 6: Multiple conflict types");
+        $display("Submitting transactions with multiple conflict types");
+        
+        // Transaction 16: Read from region 13, Write to region 14
+        submit_transaction(
+            64'h16,
+            1024'h2000,  // Read from region 13
+            1024'h4000   // Write to region 14
+        );
+        repeat(10) @(posedge clk);
+        
+        // Transaction 17: Read from region 14, Write to region 13
+        // This creates both RAW (reads region 14 which Transaction 16 wrote to)
+        // and WAR (writes to region 13 which Transaction 16 read from)
+        submit_transaction(
+            64'h17,
+            1024'h4000,  // Read from region 14 (RAW conflict with Transaction 16)
+            1024'h2000   // Write to region 13 (WAR conflict with Transaction 16)
+        );
+        repeat(10) @(posedge clk);
+        
+        // Wait for processing
+        repeat(100) @(posedge clk);
+        
+        // Display test results
+        $display("\nTest Results:");
+        $display("Raw Conflicts: %0d", raw_conflicts);
+        $display("WAW Conflicts: %0d", waw_conflicts);
+        $display("WAR Conflicts: %0d", war_conflicts);
+        $display("Total Conflicts: %0d", raw_conflicts + waw_conflicts + war_conflicts);
+        $display("Rejected Transactions: %0d", filter_hits);
+        $display("Queue Occupancy: %0d", queue_occupancy);
+        $display("Transactions Processed: %0d", transactions_processed);
+        
+        // End simulation
+        #100 $finish;
     end
 
 endmodule

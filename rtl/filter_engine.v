@@ -1,157 +1,112 @@
 ////////////
-// Filter Engine - responsible for conflict detection and keeping track of a particular 
-// batch's read/write deps table
-// TODO: implement optmized version of dep checking using hashmaps/bitmaps.
+// Filter Engine - responsible for batch dependency tracking
 ////////////
 
-module filter_engine (
+module filter_engine #(
+    parameter MAX_DEPENDENCIES = 1024
+) (
     input wire clk,
     input wire rst_n,
     
-    // Inputs from conflict checker
-    input wire transaction_forwarded,
-    input wire [63:0] owner_programID,
-    input wire [1024*64-1:0] read_dependencies,
-    input wire [1024*64-1:0] write_dependencies,
+    // AXI-Stream input interface
+    input wire s_axis_tvalid,
+    output reg s_axis_tready,
+    input wire [63:0] s_axis_tdata_owner_programID,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
     
-    // Inputs from batch for table updates
-    input wire batch_update_valid,
-    input wire [63:0] batch_update_id,
+    // AXI-Stream output interface
+    output reg m_axis_tvalid,
+    input wire m_axis_tready,
+    output reg [63:0] m_axis_tdata_owner_programID,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
-    // Feedback signals from batch
-    input wire pipeline_ready,
-    input wire [63:0] accepted_id,
+    // Batch dependency tracking
+    input wire [MAX_DEPENDENCIES-1:0] batch_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] batch_write_dependencies,
     
-    // Output signals
-    output reg filter_ready,
-    output reg has_conflict,
-    output reg [63:0] conflicting_id
+    // Performance monitoring
+    output reg [31:0] filter_hits
 );
 
-    // Constants
-    parameter MAX_TRANSACTIONS = 48;
-    parameter DEPS_PER_TRANSACTION = 1024;
-    parameter TABLE_SIZE = MAX_TRANSACTIONS * DEPS_PER_TRANSACTION;
-    parameter TABLE_INDEX_BITS = 16;  // table_size
-    parameter ACCOUNT_ID_WIDTH = 64;  // Width of account/program IDs
-
-    // Synthesis-friendly constants for loops
-    localparam MAX_TX_DEPENDENCIES = DEPS_PER_TRANSACTION;
-    localparam MAX_BATCH_TX = MAX_TRANSACTIONS;
-    localparam TOTAL_TABLE_SIZE = MAX_BATCH_TX * MAX_TX_DEPENDENCIES;
-
-    // Batch Dependency tables for all tx in the batch
-    reg [63:0] read_dependency_table [TOTAL_TABLE_SIZE-1:0];   // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
-    reg [63:0] write_dependency_table [TOTAL_TABLE_SIZE-1:0];  // Table for MAX_TRANSACTIONS * DEPS_PER_TRANSACTION each
-    reg [63:0] owner_table [TOTAL_TABLE_SIZE-1:0];            // Store owner ID for each dependency
-    reg [TABLE_INDEX_BITS-1:0] table_size;    // Current size of tables - keep track of how much space we have used.
+    // Internal registers
+    reg [63:0] owner_programID_r;
+    reg [MAX_DEPENDENCIES-1:0] read_deps_r;
+    reg [MAX_DEPENDENCIES-1:0] write_deps_r;
     
-    // Pipeline state
-    reg waiting_for_acceptance;
-    reg [63:0] current_transaction_id;   // Store current transaction's ID
-    reg [1024*64-1:0] current_read_deps;   // Store current transaction's dependencies
-    reg [1024*64-1:0] current_write_deps;  // Store current transaction's dependencies
+    // Conflict detection
+    wire has_raw_conflict = |(read_deps_r & batch_write_dependencies);
+    wire has_waw_conflict = |(write_deps_r & batch_write_dependencies);
+    wire has_war_conflict = |(write_deps_r & batch_read_dependencies);
+    wire has_conflict = has_raw_conflict || has_waw_conflict || has_war_conflict;
     
-    // Temporary variables for dependency checking
-    integer i, j;
-
-    // Table management and dependency checking logic
+    // State machine states
+    localparam IDLE = 2'b00;
+    localparam FILTER = 2'b01;
+    localparam OUTPUT = 2'b10;
+    reg [1:0] state;
+    
+    // State machine
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            table_size <= 16'd0;
-            waiting_for_acceptance <= 1'b0;
-            current_transaction_id <= 64'd0;
-            current_read_deps <= 0;
-            current_write_deps <= 0;
-            filter_ready <= 1'b0;
-            has_conflict <= 1'b0;
-            conflicting_id <= 64'd0;
-            for (i = 0; i < TOTAL_TABLE_SIZE; i = i + 1) begin
-                read_dependency_table[i] <= 64'd0;
-                write_dependency_table[i] <= 64'd0;
-                owner_table[i] <= 64'd0;
-            end
-        end
-        else begin
-            // Default values
-            filter_ready <= 1'b0;
-            
-            if (transaction_forwarded && pipeline_ready) begin
-                // Store the dependencies for this transaction
-                current_transaction_id <= owner_programID;
-                current_read_deps <= read_dependencies;
-                current_write_deps <= write_dependencies;
-                waiting_for_acceptance <= 1'b1;
-                
-                // Clear conflict flag before checking
-                has_conflict <= 1'b0;
-                conflicting_id <= 64'd0;
-                
-                // Check for conflicts
-                for (i = 0; i < MAX_TX_DEPENDENCIES; i = i + 1) begin
-                    if (read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 || 
-                        write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0) begin
-                        for (j = 0; j < MAX_BATCH_TX; j = j + 1) begin  
-                            // Only check if j is less than current table_size
-                            if (j < table_size) begin
-                                // Check read-write conflicts (current read vs existing writes)
-                                if (read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
-                                    read_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == write_dependency_table[j]) begin
-                                    has_conflict <= 1'b1;
-                                    conflicting_id <= owner_table[j];
-                                end
-                                // Check write-write conflicts
-                                if (write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
-                                    write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == write_dependency_table[j]) begin
-                                    has_conflict <= 1'b1;
-                                    conflicting_id <= owner_table[j];
-                                end
-                                // Check write-read conflicts (current write vs existing reads)
-                                if (write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] != 0 && 
-                                    write_dependencies[i*ACCOUNT_ID_WIDTH +: ACCOUNT_ID_WIDTH] == read_dependency_table[j]) begin
-                                    has_conflict <= 1'b1;
-                                    conflicting_id <= owner_table[j];
-                                end
-                            end
-                        end
+            state <= IDLE;
+            s_axis_tready <= 1'b0;
+            m_axis_tvalid <= 1'b0;
+            m_axis_tdata_owner_programID <= 64'd0;
+            m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            owner_programID_r <= 64'd0;
+            read_deps_r <= {MAX_DEPENDENCIES{1'b0}};
+            write_deps_r <= {MAX_DEPENDENCIES{1'b0}};
+            filter_hits <= 32'd0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    s_axis_tready <= 1'b1;
+                    if (s_axis_tvalid && s_axis_tready) begin
+                        // Latch input data
+                        owner_programID_r <= s_axis_tdata_owner_programID;
+                        read_deps_r <= s_axis_tdata_read_dependencies;
+                        write_deps_r <= s_axis_tdata_write_dependencies;
+                        s_axis_tready <= 1'b0;
+                        state <= FILTER;
                     end
                 end
                 
-                // Set filter_ready if no conflicts found
-                filter_ready <= !has_conflict;
-            end
-            else if (waiting_for_acceptance) begin
-                if (has_conflict) begin
-                    // If conflict detected, clear waiting state immediately
-                    waiting_for_acceptance <= 1'b0;
-                    filter_ready <= 1'b0;
-                end
-                else if (accepted_id == current_transaction_id) begin
-                    // Transaction was accepted, update tables
-                    for (i = 0; i < MAX_TX_DEPENDENCIES; i = i + 1) begin
-                        if (current_read_deps[i*64 +: 64] != 0) begin
-                            if (table_size < TOTAL_TABLE_SIZE) begin
-                                read_dependency_table[table_size] <= current_read_deps[i*64 +: 64];
-                                owner_table[table_size] <= current_transaction_id;
-                                table_size <= table_size + 1;
-                            end
-                        end
-                        if (current_write_deps[i*64 +: 64] != 0) begin
-                            if (table_size < TOTAL_TABLE_SIZE) begin
-                                write_dependency_table[table_size] <= current_write_deps[i*64 +: 64];
-                                owner_table[table_size] <= current_transaction_id;
-                                table_size <= table_size + 1;
-                            end
-                        end
+                FILTER: begin
+                    // Make filtering decision based on conflicts
+                    if (has_conflict) begin
+                        // Transaction has conflict, increment counter and discard
+                        filter_hits <= filter_hits + 1'b1;
+                        $display("Filter Engine: Transaction %h filtered due to conflict", owner_programID_r);
+                        if (has_raw_conflict) $display("  - RAW conflict detected");
+                        if (has_waw_conflict) $display("  - WAW conflict detected");
+                        if (has_war_conflict) $display("  - WAR conflict detected");
+                        state <= IDLE;
+                        s_axis_tready <= 1'b1;
+                    end else begin
+                        // No conflict, forward transaction
+                        m_axis_tdata_owner_programID <= owner_programID_r;
+                        m_axis_tdata_read_dependencies <= read_deps_r;
+                        m_axis_tdata_write_dependencies <= write_deps_r;
+                        m_axis_tvalid <= 1'b1;
+                        state <= OUTPUT;
                     end
-                    waiting_for_acceptance <= 1'b0;
                 end
-            end
-            else begin
-                // When not processing make sure the clear conflict flags
-                has_conflict <= 1'b0;
-                conflicting_id <= 64'd0;
-            end
+                
+                OUTPUT: begin
+                    // Wait for downstream to accept
+                    if (m_axis_tvalid && m_axis_tready) begin
+                        m_axis_tvalid <= 1'b0;
+                        state <= IDLE;
+                        s_axis_tready <= 1'b1;
+                    end
+                end
+                
+                default: state <= IDLE;
+            endcase
         end
     end
+
 endmodule
