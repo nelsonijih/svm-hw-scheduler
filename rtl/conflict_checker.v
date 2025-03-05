@@ -81,6 +81,7 @@ module conflict_checker #(
             
             // Default assignments
             s_axis_tready <= 1'b0;
+            m_axis_tvalid <= 1'b0; // Default to not valid
             
             // Handle batch completion signal
             if (batch_completed) begin
@@ -94,7 +95,6 @@ module conflict_checker #(
                 IDLE: begin
                     // Ready to accept new transaction
                     s_axis_tready <= 1'b1;
-                    m_axis_tvalid <= 1'b0;
                     
                     // Reset conflict flags
                     has_raw_conflict <= 1'b0;
@@ -165,7 +165,7 @@ module conflict_checker #(
                         $display("WAR conflict detected at time %0t", $time);
                     end
                     
-                    if (has_any_conflict) begin
+                    if (has_raw_conflict || has_waw_conflict || has_war_conflict) begin
                         // Transaction has conflicts, filter it out
                         filter_hits <= filter_hits + 1'b1;
                         $display("Transaction filtered due to conflicts at time %0t", $time);
