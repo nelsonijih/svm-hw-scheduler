@@ -140,7 +140,76 @@ module batch #(
                             
                             // Signal batch completion
                             batch_completed <= 1'b1;
-                            $display("Batch completed at time %0t - Signaling completion", $time);
+                            
+                            // Print detailed batch information
+                            $display("\n===============FOR SIMULATION ONLY. REMOVE FOR SYNC====================================");
+                            $display("BATCH COMPLETED at time %0t", $time);
+                            $display("Total transactions in batch: %0d", batch_count);
+                            $display("===================================================\n");
+                            
+                            // Print each transaction's details
+                            begin
+                                integer i;
+                                integer bit_idx;
+                                
+                                for (i = 0; i < batch_count; i = i + 1) begin
+                                    $display("Transaction %0d:", i);
+                                    $display("  Owner Program ID: 0x%h", batch_owner_programID[i]);
+                                    
+                                    // Print read dependencies (only non-zero bits for clarity)
+                                    $display("  Read Dependencies:");
+                                    for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                        if (batch_read_deps[i][bit_idx]) begin
+                                            $display("    Bit %0d: 1", bit_idx);
+                                        end
+                                    end
+                                    
+                                    // Print write dependencies (only non-zero bits for clarity)
+                                    $display("  Write Dependencies:");
+                                    for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                        if (batch_write_deps[i][bit_idx]) begin
+                                            $display("    Bit %0d: 1", bit_idx);
+                                        end
+                                    end
+                                    $display("");
+                                end
+                            end
+                            
+                            // Print batch cumulative dependencies
+                            $display("Batch Cumulative Dependencies:");
+                            
+                            begin
+                                integer i;
+                                integer bit_idx;
+                                reg [1023:0] cumulative_read_deps;
+                                reg [1023:0] cumulative_write_deps;
+                                
+                                // Calculate and print cumulative read dependencies
+                                $display("  Cumulative Read Dependencies:");
+                                cumulative_read_deps = 1024'd0;
+                                for (i = 0; i < batch_count; i = i + 1) begin
+                                    cumulative_read_deps = cumulative_read_deps | batch_read_deps[i];
+                                end
+                                for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                    if (cumulative_read_deps[bit_idx]) begin
+                                        $display("    Bit %0d: 1", bit_idx);
+                                    end
+                                end
+                                
+                                // Calculate and print cumulative write dependencies
+                                $display("  Cumulative Write Dependencies:");
+                                cumulative_write_deps = 1024'd0;
+                                for (i = 0; i < batch_count; i = i + 1) begin
+                                    cumulative_write_deps = cumulative_write_deps | batch_write_deps[i];
+                                end
+                                for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                    if (cumulative_write_deps[bit_idx]) begin
+                                        $display("    Bit %0d: 1", bit_idx);
+                                    end
+                                end
+                            end
+                            
+                            $display("\n================REMOVE FOR SYNTHESIS===================================");
                         end
                         else begin
                             // Move to next transaction in batch

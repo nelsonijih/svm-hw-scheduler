@@ -175,10 +175,10 @@ The design includes several performance counters:
   - [ ] Add support for transaction priorities?
 
 - [ ] **Memory Efficiency**
-  - [ ] Create a Tx read/write dependencies as a hashmap function that maps to an index of 1024 array(assuming no colossion) e.g     64-bit addr maps to just setting a single bit at a hashmap location. 
+  - [ ] Create a Tx read/write dependencies as a hashmap function that maps to an index of 1024 array(assuming no colossion) e.g 64-bit addr maps to just setting a single bit at a hashmap location. 
    For examples. A tx has the the following
-   read_dep = [addr1, adddr2, ...] ...transformed and inserted into batch_read_deps[hashmap(read_dep[0])] = 1, etc
-   write_dep = [addr1, adddr2, ...]...transformed and inserted into batch_write_deps[hashmap(write_dep[0])] = 1, etc 
+   read_dep = [addr1, adddr2, ...] ...transformed and inserted into batch_read_deps[hashmap(read_dep[addr1])] = 1, etc
+   write_dep = [addr1, adddr2, ...]...transformed and inserted into batch_write_deps[hashmap(write_dep[addr1])] = 1, etc. FPGA computes and sends back
   - [ ] Add bloom filter pre-screening to quickly reject obvious conflicts
   - [ ] Optimize storage for batch transactions using BRAM,etc
 
