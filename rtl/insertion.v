@@ -1,4 +1,5 @@
 module insertion #(
+    parameter MAX_DEPENDENCIES = 256,
     parameter MAX_PENDING_TRANSACTIONS = 16,
     parameter INSERTION_QUEUE_DEPTH = 8
 ) (
@@ -9,15 +10,16 @@ module insertion #(
     input wire s_axis_tvalid,
     output reg s_axis_tready,
     input wire [63:0] s_axis_tdata_owner_programID,
-    input wire [1023:0] s_axis_tdata_read_dependencies,
-    input wire [1023:0] s_axis_tdata_write_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
+    // has_conflict signal removed as conflict_checker now only forwards non-conflicting transactions
     
     // AXI-Stream output interface
     output reg m_axis_tvalid,
     input wire m_axis_tready,
     output reg [63:0] m_axis_tdata_owner_programID,
-    output reg [1023:0] m_axis_tdata_read_dependencies,
-    output reg [1023:0] m_axis_tdata_write_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
     // Performance monitoring
     output reg [31:0] queue_occupancy
@@ -31,8 +33,9 @@ module insertion #(
     
     // Queue storage
     reg [63:0] owner_programID_queue [0:INSERTION_QUEUE_DEPTH-1];
-    reg [1023:0] read_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
-    reg [1023:0] write_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
+    reg [MAX_DEPENDENCIES-1:0] read_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
+    reg [MAX_DEPENDENCIES-1:0] write_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
+    // has_conflict_queue removed as conflict_checker now only forwards non-conflicting transactions
     reg [3:0] queue_head;
     reg [3:0] queue_tail;
     reg queue_empty;
@@ -52,8 +55,8 @@ module insertion #(
             s_axis_tready <= 1'b1;
             m_axis_tvalid <= 1'b0;
             m_axis_tdata_owner_programID <= 64'd0;
-            m_axis_tdata_read_dependencies <= 1024'd0;
-            m_axis_tdata_write_dependencies <= 1024'd0;
+            m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             
             queue_head <= 4'd0;
             queue_tail <= 4'd0;
@@ -114,6 +117,7 @@ module insertion #(
                         owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
                         read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
                         write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
+                        // has_conflict_queue entry removed
                         
                         queue_tail <= next_tail;
                         queue_empty <= 1'b0;

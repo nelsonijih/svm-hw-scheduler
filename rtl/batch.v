@@ -1,4 +1,5 @@
 module batch #(
+    parameter MAX_DEPENDENCIES = 256,
     parameter MAX_BATCH_SIZE = 8,
     parameter BATCH_TIMEOUT_CYCLES = 100
 ) (
@@ -9,15 +10,15 @@ module batch #(
     input wire s_axis_tvalid,
     output reg s_axis_tready,
     input wire [63:0] s_axis_tdata_owner_programID,
-    input wire [1023:0] s_axis_tdata_read_dependencies,
-    input wire [1023:0] s_axis_tdata_write_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
     
     // AXI-Stream output interface
     output reg m_axis_tvalid,
     input wire m_axis_tready,
     output reg [63:0] m_axis_tdata_owner_programID,
-    output reg [1023:0] m_axis_tdata_read_dependencies,
-    output reg [1023:0] m_axis_tdata_write_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
     // Batch completion signal
     output reg batch_completed,
@@ -34,8 +35,8 @@ module batch #(
     
     // Batch storage
     reg [63:0] batch_owner_programID [0:MAX_BATCH_SIZE-1];
-    reg [1023:0] batch_read_deps [0:MAX_BATCH_SIZE-1];
-    reg [1023:0] batch_write_deps [0:MAX_BATCH_SIZE-1];
+    reg [MAX_DEPENDENCIES-1:0] batch_read_deps [0:MAX_BATCH_SIZE-1];
+    reg [MAX_DEPENDENCIES-1:0] batch_write_deps [0:MAX_BATCH_SIZE-1];
     reg [3:0] batch_count;
     reg [3:0] output_index;
     
@@ -52,8 +53,8 @@ module batch #(
             s_axis_tready <= 1'b1;
             m_axis_tvalid <= 1'b0;
             m_axis_tdata_owner_programID <= 64'd0;
-            m_axis_tdata_read_dependencies <= 1024'd0;
-            m_axis_tdata_write_dependencies <= 1024'd0;
+            m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             
             batch_count <= 4'd0;
             output_index <= 4'd0;
@@ -158,7 +159,7 @@ module batch #(
                                     
                                     // Print read dependencies (only non-zero bits for clarity)
                                     $display("  Read Dependencies:");
-                                    for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                    for (bit_idx = 0; bit_idx < MAX_DEPENDENCIES; bit_idx = bit_idx + 1) begin
                                         if (batch_read_deps[i][bit_idx]) begin
                                             $display("    Bit %0d: 1", bit_idx);
                                         end
@@ -166,7 +167,7 @@ module batch #(
                                     
                                     // Print write dependencies (only non-zero bits for clarity)
                                     $display("  Write Dependencies:");
-                                    for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                    for (bit_idx = 0; bit_idx < MAX_DEPENDENCIES; bit_idx = bit_idx + 1) begin
                                         if (batch_write_deps[i][bit_idx]) begin
                                             $display("    Bit %0d: 1", bit_idx);
                                         end
@@ -181,16 +182,16 @@ module batch #(
                             begin
                                 integer i;
                                 integer bit_idx;
-                                reg [1023:0] cumulative_read_deps;
-                                reg [1023:0] cumulative_write_deps;
+                                reg [MAX_DEPENDENCIES-1:0] cumulative_read_deps;
+                                reg [MAX_DEPENDENCIES-1:0] cumulative_write_deps;
                                 
                                 // Calculate and print cumulative read dependencies
                                 $display("  Cumulative Read Dependencies:");
-                                cumulative_read_deps = 1024'd0;
+                                cumulative_read_deps = {MAX_DEPENDENCIES{1'b0}};
                                 for (i = 0; i < batch_count; i = i + 1) begin
                                     cumulative_read_deps = cumulative_read_deps | batch_read_deps[i];
                                 end
-                                for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                for (bit_idx = 0; bit_idx < MAX_DEPENDENCIES; bit_idx = bit_idx + 1) begin
                                     if (cumulative_read_deps[bit_idx]) begin
                                         $display("    Bit %0d: 1", bit_idx);
                                     end
@@ -198,11 +199,11 @@ module batch #(
                                 
                                 // Calculate and print cumulative write dependencies
                                 $display("  Cumulative Write Dependencies:");
-                                cumulative_write_deps = 1024'd0;
+                                cumulative_write_deps = {MAX_DEPENDENCIES{1'b0}};
                                 for (i = 0; i < batch_count; i = i + 1) begin
                                     cumulative_write_deps = cumulative_write_deps | batch_write_deps[i];
                                 end
-                                for (bit_idx = 0; bit_idx < 1024; bit_idx = bit_idx + 1) begin
+                                for (bit_idx = 0; bit_idx < MAX_DEPENDENCIES; bit_idx = bit_idx + 1) begin
                                     if (cumulative_write_deps[bit_idx]) begin
                                         $display("    Bit %0d: 1", bit_idx);
                                     end

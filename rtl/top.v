@@ -3,7 +3,7 @@
 ////////////
 
 module top #(
-    parameter MAX_DEPENDENCIES = 1024, // Full dependency vector width
+    parameter MAX_DEPENDENCIES = 256, // Full dependency vector width
     parameter MAX_BATCH_SIZE = 8,
     parameter BATCH_TIMEOUT_CYCLES = 100,
     parameter MAX_PENDING_TRANSACTIONS = 16,
@@ -16,15 +16,15 @@ module top #(
     input wire s_axis_tvalid,
     output wire s_axis_tready,
     input wire [63:0] s_axis_tdata_owner_programID,
-    input wire [1023:0] s_axis_tdata_read_dependencies,
-    input wire [1023:0] s_axis_tdata_write_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
     
     // AXI-Stream output interface
     output wire m_axis_tvalid,
     input wire m_axis_tready,
     output wire [63:0] m_axis_tdata_owner_programID,
-    output wire [1023:0] m_axis_tdata_read_dependencies,
-    output wire [1023:0] m_axis_tdata_write_dependencies,
+    output wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
     // Performance monitoring
     output wire [31:0] raw_conflicts,
@@ -42,15 +42,16 @@ module top #(
     wire conflict_checker_to_insertion_tvalid;
     wire conflict_checker_to_insertion_tready;
     wire [63:0] conflict_checker_to_insertion_tdata_owner_programID;
-    wire [1023:0] conflict_checker_to_insertion_tdata_read_dependencies;
-    wire [1023:0] conflict_checker_to_insertion_tdata_write_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_read_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_write_dependencies;
+    // has_conflict signal removed as conflict_checker now only forwards non-conflicting transactions
     
     // Insertion to batch connections
     wire insertion_to_batch_tvalid;
     wire insertion_to_batch_tready;
     wire [63:0] insertion_to_batch_tdata_owner_programID;
-    wire [1023:0] insertion_to_batch_tdata_read_dependencies;
-    wire [1023:0] insertion_to_batch_tdata_write_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_read_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_write_dependencies;
     
     // Instantiate enhanced conflict checker with filtering
     conflict_checker #(
@@ -80,7 +81,8 @@ module top #(
         .raw_conflicts(raw_conflicts),
         .waw_conflicts(waw_conflicts),
         .war_conflicts(war_conflicts),
-        .filter_hits(filter_hits)
+        .filter_hits(filter_hits),
+        .transactions_processed(transactions_processed)
     );
     
     // Instantiate insertion stage

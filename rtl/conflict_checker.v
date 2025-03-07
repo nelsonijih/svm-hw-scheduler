@@ -20,7 +20,7 @@ module conflict_checker #(
     output reg [63:0] m_axis_tdata_owner_programID,
     output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
     output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
-    output reg m_axis_tdata_has_conflict,  // Indicates if transaction has conflicts
+    // Note: has_conflict signal removed as only non-conflicting transactions are forwarded
     
     // Batch control
     input wire batch_completed,
@@ -105,6 +105,7 @@ localparam CHECK = 2'b01;   // Checking for conflicts
 localparam OUTPUT = 2'b10;  // Waiting for output handshake
 localparam COMPLETE = 2'b11; // Transaction completion
 reg [1:0] state;
+reg [1:0] state_prev;  // Previous state for edge detection
 reg [1:0] next_state;  // For better state transition handling
 
 // Transaction tracking
@@ -128,10 +129,14 @@ end
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         state <= IDLE;
+        state_prev <= IDLE;
         transaction_completed <= 0;
         transaction_in_progress <= 0;
     end
     else begin
+        // Update previous state register
+        state_prev <= state;
+        
         case (state)
             IDLE: begin
                 if (s_axis_tvalid && s_axis_tready) begin
@@ -141,8 +146,22 @@ always @(posedge clk or negedge rst_n) begin
             end
             
             CHECK: begin
-                // Conflict detection complete
-                state <= OUTPUT;
+                // Only proceed to OUTPUT for non-conflicting transactions
+                // Otherwise go directly to COMPLETE to skip forwarding
+                if (!transaction_has_conflict) begin
+                    state <= OUTPUT;
+                end else begin
+                    state <= COMPLETE;
+                    // Update conflict counters here since we're skipping OUTPUT state
+                    if (has_raw_conflict) raw_conflicts <= raw_conflicts + 32'd1;
+                    if (has_waw_conflict) waw_conflicts <= waw_conflicts + 32'd1;
+                    if (has_war_conflict) war_conflicts <= war_conflicts + 32'd1;
+                    filter_hits <= filter_hits + 32'd1;
+                    
+                    if (DEBUG_ENABLE) begin
+                        $display("Time %0t: Conflict detected, skipping OUTPUT state", $time);
+                    end
+                end
             end
             
             OUTPUT: begin
@@ -191,7 +210,7 @@ always @(posedge clk or negedge rst_n) begin
         m_axis_tdata_owner_programID <= 64'd0;
         m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
         m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
-        m_axis_tdata_has_conflict <= 1'b0;
+        // m_axis_tdata_has_conflict signal removed
         
         // Reset performance counters (similar to fd_pack_schedule_impl statistics)
         raw_conflicts <= 32'd0;
@@ -384,7 +403,7 @@ end
 // Update output signals and performance counters
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        m_axis_tdata_has_conflict <= 1'b0;
+        // m_axis_tdata_has_conflict signal removed
         m_axis_tdata_owner_programID <= 64'd0;
         m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
         m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
@@ -395,8 +414,7 @@ always @(posedge clk or negedge rst_n) begin
         m_axis_tready_pipe <= m_axis_tready;
         
         if (state == OUTPUT) begin
-            // Set output data
-            m_axis_tdata_has_conflict <= transaction_has_conflict;
+            // Set output data (only non-conflicting transactions reach this point)
             m_axis_tdata_owner_programID <= owner_pipe;
             m_axis_tdata_read_dependencies <= read_deps_pipe;
             m_axis_tdata_write_dependencies <= write_deps_pipe;
@@ -404,13 +422,8 @@ always @(posedge clk or negedge rst_n) begin
             // Assert valid when in OUTPUT state
             m_axis_tvalid <= 1'b1;
             
-            // Update conflict counters if needed - only do this once when entering the state
-            if (!m_axis_tvalid && transaction_has_conflict) begin
-                if (has_raw_conflict) raw_conflicts <= raw_conflicts + 32'd1;
-                if (has_waw_conflict) waw_conflicts <= waw_conflicts + 32'd1;
-                if (has_war_conflict) war_conflicts <= war_conflicts + 32'd1;
-                filter_hits <= filter_hits + 32'd1;
-            end
+            // No need to update conflict counters here anymore
+            // Conflict transactions never reach this state
         end else if (state == COMPLETE) begin
             // Clear valid when in COMPLETE state
             m_axis_tvalid <= 1'b0;
@@ -471,13 +484,18 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-// Update transaction counter
+// Update transaction counter - count all transactions that complete processing
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         transactions_processed <= 32'd0;
     end else begin
-        if (state == COMPLETE) begin
+        // Count all transactions that complete processing, both conflicting and non-conflicting
+        if (state == COMPLETE && state_prev != COMPLETE) begin
             transactions_processed <= transactions_processed + 32'd1;
+            
+            if (DEBUG_ENABLE) begin
+                $display("Time %0t: Incrementing transactions_processed counter to %0d", $time, transactions_processed + 32'd1);
+            end
         end
     end
 end
