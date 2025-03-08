@@ -48,7 +48,7 @@ performance: $(BUILD_DIR)/performance.vvp
 	$(VVP) $<
 
 wave: sim
-	$(GTKWAVE) $(BUILD_DIR)/waves.vcd
+	$(GTKWAVE) $(BUILD_DIR)/svm_scheduler.vcd
 
 wave-simplified: simplified
 	$(GTKWAVE) $(BUILD_DIR)/simplified.vcd

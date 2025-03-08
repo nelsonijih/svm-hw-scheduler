@@ -112,15 +112,37 @@ reg [1:0] next_state;  // For better state transition handling
 reg transaction_in_progress; // Flag to track if we're currently processing a transaction
 reg transaction_completed;  // Flag to track transaction completion
 
-// Debug counters
+// Reset counters and state
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        // Reset all counters
+        raw_conflicts <= 32'd0;
+        waw_conflicts <= 32'd0;
+        war_conflicts <= 32'd0;
+        filter_hits <= 32'd0;
+        transactions_processed <= 32'd0;
+        batch_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+        batch_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+    end else begin
+        // Update transaction counter based on state transitions
+        if (state == COMPLETE && state_prev != COMPLETE) begin
+            transactions_processed <= transactions_processed + 32'd1;
+            if (DEBUG_ENABLE)
+                $display("Time %0t: Incrementing transactions_processed to %0d", $time, transactions_processed + 32'd1);
+        end
+        
+        // Reset only dependencies when batch completes
+        if (batch_completed) begin
+            batch_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            batch_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            if (DEBUG_ENABLE)
+                $display("Time %0t: Batch completed - Resetting dependencies", $time);
+        end
+    end
+end
+
+// Debug initialization
 initial begin
-    raw_conflicts = 0;
-    waw_conflicts = 0;
-    war_conflicts = 0;
-    filter_hits = 0;
-    transactions_processed = 0; // Initialize transaction counter
-    batch_read_dependencies = 0;
-    batch_write_dependencies = 0;
     if (DEBUG_ENABLE)
         $display("DEBUG_ENABLE parameter value: %d", DEBUG_ENABLE);
 end
@@ -189,6 +211,18 @@ always @(posedge clk or negedge rst_n) begin
                 state <= IDLE;
                 transaction_completed <= 0;
                 s_axis_tready <= 1'b1; // Set ready for new transactions
+                
+                // Handle batch completion
+                if (batch_completed) begin
+                    // Reset transaction counter and dependencies
+                    transactions_processed <= 32'd0;
+                    batch_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+                    batch_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+                    
+                    if (DEBUG_ENABLE) begin
+                        $display("Time %0t: Batch completed - Resetting transaction counter and dependencies", $time);
+                    end
+                end
                 
                 if (DEBUG_ENABLE) begin
                     $display("Time %0t: Transaction complete, moving to IDLE state", $time);
@@ -489,8 +523,11 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         transactions_processed <= 32'd0;
     end else begin
-        // Count all transactions that complete processing, both conflicting and non-conflicting
-        if (state == COMPLETE && state_prev != COMPLETE) begin
+        if (batch_completed) begin
+            // Reset counter when batch completes
+            transactions_processed <= 32'd0;
+        end else if (state == COMPLETE && state_prev != COMPLETE) begin
+            // Count all transactions that complete processing, both conflicting and non-conflicting
             transactions_processed <= transactions_processed + 32'd1;
             
             if (DEBUG_ENABLE) begin

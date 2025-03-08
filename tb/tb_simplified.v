@@ -15,15 +15,15 @@ module tb_simplified;
     reg s_axis_tvalid;
     wire s_axis_tready;
     reg [63:0] s_axis_tdata_owner_programID;
-    reg [1023:0] s_axis_tdata_read_dependencies;
-    reg [1023:0] s_axis_tdata_write_dependencies;
+    reg [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies;
+    reg [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies;
     
     // AXI-Stream output interface
     wire m_axis_tvalid;
     reg m_axis_tready;
     wire [63:0] m_axis_tdata_owner_programID;
-    wire [1023:0] m_axis_tdata_read_dependencies;
-    wire [1023:0] m_axis_tdata_write_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies;
+    wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies;
     
     // Performance monitoring
     wire [31:0] raw_conflicts;
@@ -75,8 +75,8 @@ module tb_simplified;
     
     // Test vectors
     reg [63:0] test_owner_ids [0:9];
-    reg [1023:0] test_read_deps [0:9];
-    reg [1023:0] test_write_deps [0:9];
+    reg [MAX_DEPENDENCIES-1:0] test_read_deps [0:9];
+    reg [MAX_DEPENDENCIES-1:0] test_write_deps [0:9];
     
     // Initialize test vectors
     initial begin
@@ -199,9 +199,18 @@ module tb_simplified;
         $display("  RAW Conflicts: %d", raw_conflicts);
         $display("  WAW Conflicts: %d", waw_conflicts);
         $display("  WAR Conflicts: %d", war_conflicts);
+        $display("  Filter Hits: %d", filter_hits);
         $display("  Total Conflicts: %d", raw_conflicts + waw_conflicts + war_conflicts);
         $display("  Rejected Transactions: %d", filter_hits);
         $display("  Processed Transactions: %d", transactions_processed);
+        $display("  Final Queue Occupancy: %d", queue_occupancy);
+        
+        // Print explanation of consolidated conflict detection
+        $display("\nNote: This testbench uses the consolidated conflict detection approach where:");
+        $display("  - Conflict detection is performed directly in the conflict_checker module");
+        $display("  - Only non-conflicting transactions are forwarded to the insertion stage");
+        $display("  - Conflict types (RAW, WAW, WAR) are tracked separately");
+        $display("  - Batch dependencies are reset when a batch is completed");
         
         $finish;
     end
@@ -216,5 +225,9 @@ module tb_simplified;
             $display("  Write dependencies: %h", m_axis_tdata_write_dependencies);
         end
     end
+    
+    // Monitor conflict detection
+    // In the consolidated approach, conflict_checker directly filters transactions
+    // and only forwards non-conflicting ones to the insertion stage
 
 endmodule

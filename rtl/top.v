@@ -134,10 +134,7 @@ module top #(
         .m_axis_tdata_write_dependencies(m_axis_tdata_write_dependencies),
         
         // Batch completion signal
-        .batch_completed(batch_completed),
-        
-        // Performance monitoring
-        .transactions_processed(transactions_processed)
+        .batch_completed(batch_completed)
     );
 
 endmodule

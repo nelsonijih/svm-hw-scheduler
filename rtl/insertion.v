@@ -12,7 +12,6 @@ module insertion #(
     input wire [63:0] s_axis_tdata_owner_programID,
     input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
     input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
-    // has_conflict signal removed as conflict_checker now only forwards non-conflicting transactions
     
     // AXI-Stream output interface
     output reg m_axis_tvalid,
@@ -35,11 +34,13 @@ module insertion #(
     reg [63:0] owner_programID_queue [0:INSERTION_QUEUE_DEPTH-1];
     reg [MAX_DEPENDENCIES-1:0] read_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
     reg [MAX_DEPENDENCIES-1:0] write_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
-    // has_conflict_queue removed as conflict_checker now only forwards non-conflicting transactions
     reg [3:0] queue_head;
     reg [3:0] queue_tail;
     reg queue_empty;
     reg queue_full;
+    
+    // Track if current output transaction is from queue
+    reg current_from_queue;
     
     // Debug counter
     reg [31:0] debug_cycles;
@@ -63,69 +64,73 @@ module insertion #(
             queue_empty <= 1'b1;
             queue_full <= 1'b0;
             queue_occupancy <= 32'd0;
+            current_from_queue <= 1'b0;
             debug_cycles <= 32'd0;
         end
         else begin
             // Increment debug counter
             debug_cycles <= debug_cycles + 1'b1;
             
-            // Default assignments
-            s_axis_tready <= 1'b0;
-            
             case (state)
                 IDLE: begin
+                    // Default: ready for input if queue not full
+                    s_axis_tready <= !queue_full;
+                    m_axis_tvalid <= 1'b0;
+                    
                     if (!queue_empty) begin
                         // Process from queue
                         m_axis_tvalid <= 1'b1;
                         m_axis_tdata_owner_programID <= owner_programID_queue[queue_head];
                         m_axis_tdata_read_dependencies <= read_dependencies_queue[queue_head];
                         m_axis_tdata_write_dependencies <= write_dependencies_queue[queue_head];
+                        current_from_queue <= 1'b1;
                         state <= OUTPUT;
                     end
-                    else begin
-                        // Ready for new input if queue not full
-                        s_axis_tready <= !queue_full;
-                        
-                        if (s_axis_tvalid && s_axis_tready) begin
-                            // Directly forward if queue empty
-                            m_axis_tvalid <= 1'b1;
-                            m_axis_tdata_owner_programID <= s_axis_tdata_owner_programID;
-                            m_axis_tdata_read_dependencies <= s_axis_tdata_read_dependencies;
-                            m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
-                            state <= OUTPUT;
-                        end
+                    else if (s_axis_tvalid && !queue_full) begin
+                        // Directly forward if queue empty
+                        m_axis_tvalid <= 1'b1;
+                        m_axis_tdata_owner_programID <= s_axis_tdata_owner_programID;
+                        m_axis_tdata_read_dependencies <= s_axis_tdata_read_dependencies;
+                        m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
+                        current_from_queue <= 1'b0;
+                        state <= OUTPUT;
                     end
                 end
                 
                 OUTPUT: begin
+                    // Keep trying to send current transaction
+                    m_axis_tvalid <= 1'b1;
+                    
                     if (m_axis_tready) begin
-                        m_axis_tvalid <= 1'b0;
-                        
-                        if (!queue_empty) begin
-                            // Update queue head if we processed from queue
+                        // Transaction accepted
+                        if (current_from_queue) begin
+                            // Update queue if current transaction was from queue
                             queue_head <= next_head;
                             queue_empty <= (next_head == queue_tail);
                             queue_full <= 1'b0;
                             queue_occupancy <= queue_occupancy - 1'b1;
                         end
-                        
                         state <= IDLE;
-                        s_axis_tready <= !queue_full;
                     end
-                    else if (s_axis_tvalid && !queue_full) begin
-                        // Store incoming transaction in queue while waiting
-                        owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
-                        read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
-                        write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
-                        // has_conflict_queue entry removed
-                        
-                        queue_tail <= next_tail;
-                        queue_empty <= 1'b0;
-                        queue_full <= (next_tail == queue_head);
-                        queue_occupancy <= queue_occupancy + 1'b1;
-                        
-                        // Accept the transaction
-                        s_axis_tready <= 1'b1;
+                    else begin
+                        // Under backpressure
+                        if (s_axis_tvalid && !queue_full) begin
+                            // Queue new transaction
+                            owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
+                            read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
+                            write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
+                            
+                            queue_tail <= next_tail;
+                            queue_empty <= 1'b0;
+                            queue_full <= (next_tail == queue_head);
+                            queue_occupancy <= queue_occupancy + 1'b1;
+                            
+                            // Only accept new transactions if queue isn't full
+                            s_axis_tready <= !(next_tail == queue_head);
+                        end else begin
+                            // Not accepting new transactions if queue full
+                            s_axis_tready <= !queue_full;
+                        end
                     end
                 end
                 
