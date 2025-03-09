@@ -172,6 +172,8 @@ always @(posedge clk or negedge rst_n) begin
                 // Otherwise go directly to COMPLETE to skip forwarding
                 if (!transaction_has_conflict) begin
                     state <= OUTPUT;
+                    if (DEBUG_ENABLE)
+                        $display("Time %0t: Transaction ID %h accepted - no conflicts", $time, owner_pipe);
                 end else begin
                     state <= COMPLETE;
                     // Update conflict counters here since we're skipping OUTPUT state
@@ -181,7 +183,8 @@ always @(posedge clk or negedge rst_n) begin
                     filter_hits <= filter_hits + 32'd1;
                     
                     if (DEBUG_ENABLE) begin
-                        $display("Time %0t: Conflict detected, skipping OUTPUT state", $time);
+                        $display("Time %0t: Transaction ID %h REJECTED due to conflicts (RAW=%b WAW=%b WAR=%b)", 
+                                 $time, owner_pipe, has_raw_conflict, has_waw_conflict, has_war_conflict);
                     end
                 end
             end

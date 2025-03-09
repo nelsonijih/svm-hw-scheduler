@@ -4,13 +4,11 @@
 
 `timescale 1ns/1ps
 
-`define MAX_BATCH_SIZE 4
-
 module tb_svm_scheduler;
 
     // Parameters
     parameter MAX_DEPENDENCIES = 256;
-    parameter MAX_BATCH_SIZE = `MAX_BATCH_SIZE;
+    parameter MAX_BATCH_SIZE = 8;  // Match top.v parameter
     parameter BATCH_TIMEOUT_CYCLES = 100;
     parameter MAX_PENDING_TRANSACTIONS = 16;
     parameter INSERTION_QUEUE_DEPTH = 8;
@@ -44,65 +42,123 @@ module tb_svm_scheduler;
     wire [31:0] transactions_processed;
     
     // Performance monitoring
-    reg [31:0] total_transactions;
+    reg [31:0] total_transactions;      // Total transactions submitted to system
+    reg [31:0] total_batched_transactions; // Total transactions included in batches
     reg [31:0] prev_transactions;
     reg [31:0] total_batches;
     reg [31:0] empty_batches;
     reg [31:0] max_batch_transactions;
     reg [31:0] current_batch_transactions;
+    reg [31:0] full_batches;           // Batches with MAX_BATCH_SIZE transactions
+    reg [31:0] batch_start_time;       // Start time of current batch
+    reg [31:0] total_batch_time;       // Total time spent in batches
+    reg [31:0] min_batch_time;         // Minimum time spent in a batch
+    reg [31:0] max_batch_time;         // Maximum time spent in a batch
+    reg [31:0] batch_time;             // Time taken by current batch
     
     // Simulation timeout counter
     reg [31:0] timeout_counter;
     
-    // Monitor batch completions
+    // Monitor batch completions and timing
     always @(posedge clk) begin
         if (!rst_n) begin
             total_batches <= 32'd0;
             empty_batches <= 32'd0;
             max_batch_transactions <= 32'd0;
             current_batch_transactions <= 32'd0;
+            full_batches <= 32'd0;
+            total_batched_transactions <= 32'd0;
+            batch_start_time <= $time;
+            total_batch_time <= 32'd0;
+            min_batch_time <= 32'hFFFFFFFF;
+            max_batch_time <= 32'd0;
+            prev_transactions <= 32'd0;
         end else begin
             // Track current batch transactions
+            if (svm_scheduler.batch_inst.transaction_accepted) begin
+                // Get the actual batch count from the batch module
+                current_batch_transactions <= svm_scheduler.batch_inst.batch_count;
+                
+                // Start timing on first transaction in batch
+                if (svm_scheduler.batch_inst.batch_count == 0) begin
+                    batch_start_time <= $time;
+                end
+                
+                // Debug output
+                $display("\nTransaction added to batch:");
+                $display("  Current batch size: %0d", svm_scheduler.batch_inst.batch_count + 1);
+                $display("  Max batch size: %0d", MAX_BATCH_SIZE);
+                $display("  Transaction accepted: %0d", svm_scheduler.batch_inst.transaction_accepted);
+            end
+            
+            // Keep track of processed transactions separately
             if (transactions_processed > prev_transactions) begin
-                current_batch_transactions <= current_batch_transactions + (transactions_processed - prev_transactions);
+                prev_transactions <= transactions_processed;
             end
             
             // Handle batch completion
             if (svm_scheduler.batch_completed) begin
-                total_batches <= total_batches + 32'd1;
-                
-                // Update empty batch counter
-                if (current_batch_transactions == 0) begin
-                    empty_batches <= empty_batches + 32'd1;
+                if (svm_scheduler.batch_inst.batch_count > 0) begin
+                    total_batches <= total_batches + 32'd1;
+                    // Use the actual batch count
+                    total_batched_transactions <= total_batched_transactions + svm_scheduler.batch_inst.batch_count;
+                    
+                    // Update batch statistics
+                    if (svm_scheduler.batch_inst.batch_count >= MAX_BATCH_SIZE) begin
+                        full_batches <= full_batches + 32'd1;
+                        max_batch_transactions <= MAX_BATCH_SIZE;
+                    end else if (svm_scheduler.batch_inst.batch_count == 0) begin
+                        empty_batches <= empty_batches + 32'd1;
+                    end else if (svm_scheduler.batch_inst.batch_count > max_batch_transactions && svm_scheduler.batch_inst.batch_count < MAX_BATCH_SIZE) begin
+                        max_batch_transactions <= svm_scheduler.batch_inst.batch_count;
+                    end
+                    
+                    // Calculate batch time (in clock cycles)
+                    batch_time = ($time - batch_start_time) / 20; // Convert to clock cycles (20ps per cycle)
+                    total_batch_time <= total_batch_time + batch_time;
+                    
+                    // Update min/max batch times
+                    if (batch_time < min_batch_time || min_batch_time == 32'hFFFFFFFF) begin
+                        min_batch_time <= batch_time;
+                    end
+                    if (batch_time > max_batch_time) begin
+                        max_batch_time <= batch_time;
+                    end
+                    
+                    // Display detailed batch completion info
+                    $display("\nBatch %0d completed:", total_batches + 32'd1);
+                    $display("  Number of transactions: %0d", current_batch_transactions);
+                    $display("  Time taken: %0d cycles", batch_time);
+                    $display("  Running statistics:");
+                    $display("    Total batches so far: %0d", total_batches + 1);
+                    $display("    Total batched transactions: %0d", total_batched_transactions);
+                    $display("    Max transactions in a batch: %0d", 
+                             current_batch_transactions > max_batch_transactions ? current_batch_transactions : max_batch_transactions);
+                    
+                    // Reset current batch tracking
+                    current_batch_transactions <= 32'd0;
                 end
-                
-                // Update max transactions per batch
-                if (current_batch_transactions > max_batch_transactions) begin
-                    max_batch_transactions <= current_batch_transactions;
-                end
-                
-                // Display batch completion info
-                $display("Time %0t: Batch %0d completed with %0d transactions", 
-                         $time, total_batches + 32'd1, current_batch_transactions);
-                         
-                // Reset current batch counter
-                current_batch_transactions <= 32'd0;
             end
         end
     end
     
-    // Monitor transactions processed
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            total_transactions <= 32'd0;
-            prev_transactions <= 32'd0;
-        end else begin
-            prev_transactions <= transactions_processed;
-            if (transactions_processed > prev_transactions) begin
-                total_transactions <= total_transactions + (transactions_processed - prev_transactions);
-            end
+    // Task to submit a transaction and update counters
+    task submit_transaction;
+        input [63:0] owner_programID;
+        input [MAX_DEPENDENCIES-1:0] read_dependencies;
+        input [MAX_DEPENDENCIES-1:0] write_dependencies;
+        begin
+            $display("Submitting transaction %0h at time %0d", owner_programID, $time);
+            total_transactions = total_transactions + 1;
+            s_axis_tvalid = 1;
+            s_axis_tdata_owner_programID = owner_programID;
+            s_axis_tdata_read_dependencies = read_dependencies;
+            s_axis_tdata_write_dependencies = write_dependencies;
+            @(posedge clk);
+            while (!s_axis_tready) @(posedge clk);
+            s_axis_tvalid = 0;
         end
-    end
+    endtask
     
     // Instantiate the top module
     top #(
@@ -157,30 +213,7 @@ module tb_svm_scheduler;
         end
     end
     
-    // Task to submit a transaction
-    task submit_transaction;
-        input [63:0] owner_programID;
-        input [MAX_DEPENDENCIES-1:0] read_dependencies;
-        input [MAX_DEPENDENCIES-1:0] write_dependencies;
-        begin
-            // Wait for ready
-            wait(s_axis_tready);
-            
-            // Submit transaction
-            @(posedge clk);
-            s_axis_tvalid = 1;
-            s_axis_tdata_owner_programID = owner_programID;
-            s_axis_tdata_read_dependencies = read_dependencies;
-            s_axis_tdata_write_dependencies = write_dependencies;
-            
-            // Wait for handshake
-            @(posedge clk);
-            while (!s_axis_tready) @(posedge clk);
-            
-            // Deassert valid
-            s_axis_tvalid = 0;
-        end
-    endtask
+
     
     // Test stimulus
     initial begin
@@ -200,7 +233,7 @@ module tb_svm_scheduler;
 
         // Display the batch_owner_programID array
         $display("Initial batch_owner_programID values:");
-        for (i = 0; i < `MAX_BATCH_SIZE; i = i + 1) begin
+        for (i = 0; i < MAX_BATCH_SIZE; i = i + 1) begin
             $display("batch_owner_programID[%0d] = %h", i, tb_svm_scheduler.svm_scheduler.batch_inst.batch_owner_programID[i]);
         end
         
@@ -597,13 +630,22 @@ module tb_svm_scheduler;
         $display("Rejected Transactions: %0d", filter_hits);
         $display("Final Queue Occupancy: %0d", queue_occupancy);
         $display("\nBatch Statistics:");
-        $display("  Total Transactions Processed: %0d", total_transactions);
+        $display("  Total Transactions Submitted: %0d", total_transactions);
+        $display("  Total Transactions in Batches: %0d", total_batched_transactions);
         $display("  Total Batches Created: %0d", total_batches);
-        $display("  Empty Batches: %0d (%.1f%%)", empty_batches, 
+        $display("  Full Batches: %0d (%.1f%%)", full_batches,
+                 full_batches * 100.0 / (total_batches > 0 ? total_batches : 1));
+        $display("  Empty Batches: %0d (%.1f%%)", empty_batches,
                  empty_batches * 100.0 / (total_batches > 0 ? total_batches : 1));
         $display("  Max Transactions in a Batch: %0d", max_batch_transactions);
-        $display("  Average Transactions per Batch: %.2f", 
-                 total_transactions / (total_batches > 0 ? total_batches : 1));
+        $display("  Average Transactions per Batch: %.2f",
+                 total_batched_transactions / (total_batches > 0 ? total_batches : 1));
+        $display("\nBatch Timing (in clock cycles):");
+        $display("  Average Batch Time: %0d cycles",
+                 total_batch_time / (total_batches > 0 ? total_batches : 1));
+        $display("  Min Batch Time: %0d cycles", min_batch_time);
+        $display("  Max Batch Time: %0d cycles", max_batch_time);
+        $display("  Total Time in Batches: %0d cycles", total_batch_time);
         
         // End simulation
         #100 $finish;

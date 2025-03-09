@@ -1,6 +1,7 @@
 module batch #(
     parameter MAX_DEPENDENCIES = 256,
     parameter MAX_BATCH_SIZE = 8,
+    parameter MIN_BATCH_SIZE = 2,  // Minimum transactions before timeout can trigger
     parameter BATCH_TIMEOUT_CYCLES = 100
 ) (
     input wire clk,
@@ -24,7 +25,8 @@ module batch #(
     output reg batch_completed,
     
     // Performance monitoring
-    output reg [31:0] transactions_processed
+    output reg [31:0] transactions_processed,
+    output wire transaction_accepted
 );
 
     // FSM states
@@ -45,6 +47,9 @@ module batch #(
     
     // Debug counter
     reg [31:0] debug_cycles;
+    
+    // Transaction accepted when valid handshake occurs
+    assign transaction_accepted = s_axis_tvalid && s_axis_tready;
     
     // Main control logic
     always @(posedge clk or negedge rst_n) begin
@@ -97,55 +102,109 @@ module batch #(
                     // Increment timeout counter
                     timeout_counter <= timeout_counter + 1'b1;
                     
-                    // Accept new transactions until batch is full or timeout
+                    // Only accept new transactions if we have space
                     s_axis_tready <= (batch_count < MAX_BATCH_SIZE);
                     
                     if (s_axis_tvalid && s_axis_tready) begin
-                        // Store transaction in batch
-                        batch_owner_programID[batch_count] <= s_axis_tdata_owner_programID;
-                        batch_read_deps[batch_count] <= s_axis_tdata_read_dependencies;
-                        batch_write_deps[batch_count] <= s_axis_tdata_write_dependencies;
-                        
-                        batch_count <= batch_count + 1'b1;
-                        timeout_counter <= 32'd0;
-                        
-                        // If batch is full, start outputting
-                        if (batch_count == MAX_BATCH_SIZE - 1) begin
+                        if (batch_count >= MAX_BATCH_SIZE) begin
+                            // Safety check - should never happen due to s_axis_tready condition
+                            $display("ERROR: Attempting to add transaction when batch_count (%0d) >= MAX_BATCH_SIZE (%0d)", batch_count, MAX_BATCH_SIZE);
+                            state <= OUTPUT;
+                            output_index <= 4'd0;
+                        end else begin
+                            // Store transaction in batch
+                            batch_owner_programID[batch_count] <= s_axis_tdata_owner_programID;
+                            batch_read_deps[batch_count] <= s_axis_tdata_read_dependencies;
+                            batch_write_deps[batch_count] <= s_axis_tdata_write_dependencies;
+                            
+                            // Update batch count and reset timeout
+                            batch_count <= batch_count + 1'b1;
+                            timeout_counter <= 32'd0;
+                            
+                            // Debug output
+                            $display("\nAdding transaction to batch:");
+                            $display("  Current batch size: %0d", batch_count);
+                            $display("  Max batch size: %0d", MAX_BATCH_SIZE);
+                            
+                            // If this transaction fills the batch, move to output
+                            if (batch_count + 1'b1 >= MAX_BATCH_SIZE) begin
+                                state <= OUTPUT;
+                                output_index <= 4'd0;
+                                $display("  Batch full - moving to OUTPUT state");
+                            end
+                        end
+                    end
+                    else if (batch_count > 0) begin
+                        // Only check timeouts if we have transactions
+                        if (timeout_counter >= BATCH_TIMEOUT_CYCLES && batch_count >= MIN_BATCH_SIZE) begin
+                            // Normal timeout with sufficient transactions
+                            state <= OUTPUT;
+                            output_index <= 4'd0;
+                        end
+                        else if (timeout_counter >= BATCH_TIMEOUT_CYCLES * 2 && batch_count < MIN_BATCH_SIZE) begin
+                            // Extended timeout for small batches
                             state <= OUTPUT;
                             output_index <= 4'd0;
                         end
                     end
-                    else if (timeout_counter >= BATCH_TIMEOUT_CYCLES && batch_count > 0) begin
-                        // Timeout reached with transactions in batch
-                        state <= OUTPUT;
-                        output_index <= 4'd0;
+                    else begin
+                        // No transactions, reset timeout
+                        timeout_counter <= 32'd0;
                     end
                 end
                 
                 OUTPUT: begin
-                    // Output transactions one by one
-                    m_axis_tvalid <= 1'b1;
-                    m_axis_tdata_owner_programID <= batch_owner_programID[output_index];
-                    m_axis_tdata_read_dependencies <= batch_read_deps[output_index];
-                    m_axis_tdata_write_dependencies <= batch_write_deps[output_index];
-                    
-                    if (m_axis_tready) begin
-                        // Transaction accepted
-                        transactions_processed <= transactions_processed + 1'b1;
+                    // Only output if we have transactions
+                    if (batch_count > 0) begin
+                        // Output transactions one by one
+                        m_axis_tvalid <= 1'b1;
+                        m_axis_tdata_owner_programID <= batch_owner_programID[output_index];
+                        m_axis_tdata_read_dependencies <= batch_read_deps[output_index];
+                        m_axis_tdata_write_dependencies <= batch_write_deps[output_index];
                         
-                        if (output_index == batch_count - 1) begin
-                            // All transactions in batch have been output
-                            m_axis_tvalid <= 1'b0;
-                            state <= IDLE;
-                            s_axis_tready <= 1'b1;
+                        if (m_axis_tready) begin
+                            // Transaction accepted
+                            transactions_processed <= transactions_processed + 1'b1;
                             
-                            // Signal batch completion
-                            batch_completed <= 1'b1;
+                            // Debug output
+                            $display("\nOutputting transaction from batch:");
+                            $display("  Transaction index: %0d", output_index);
+                            $display("  Batch size: %0d", batch_count);
+                            
+                            if (output_index == batch_count - 1) begin
+                                // All transactions in batch have been output
+                                m_axis_tvalid <= 1'b0;
+                                state <= IDLE;
+                                s_axis_tready <= 1'b1;
+                                
+                                // Signal batch completion
+                                batch_completed <= 1'b1;
+                                
+                                // Debug output
+                                $display("\nBatch completed:");
+                                $display("  Total transactions: %0d", batch_count);
+                                $display("  Was full: %s", batch_count == MAX_BATCH_SIZE ? "yes" : "no");
+                            end
+                            else begin
+                                // Move to next transaction in batch
+                                output_index <= output_index + 1'b1;
+                            end
+                        end
+                    end
+                    else begin
+                        // No transactions, go back to IDLE
+                        state <= IDLE;
+                        s_axis_tready <= 1'b1;
+                        m_axis_tvalid <= 1'b0;
                             
                             // Print detailed batch information
                             $display("\n===============FOR SIMULATION ONLY. REMOVE FOR SYNC====================================");
                             $display("BATCH COMPLETED at time %0t", $time);
                             $display("Total transactions in batch: %0d", batch_count);
+                            $display("Maximum allowed batch size: %0d", MAX_BATCH_SIZE);
+                            $display("Batch completed due to: %s", 
+                                batch_count >= MAX_BATCH_SIZE ? "MAX_BATCH_SIZE reached" :
+                                batch_count >= MIN_BATCH_SIZE ? "Normal timeout" : "Extended timeout");
                             $display("===================================================\n");
                             
                             // Print each transaction's details
@@ -212,11 +271,6 @@ module batch #(
                             
                             $display("\n================REMOVE FOR SYNTHESIS===================================");
                         end
-                        else begin
-                            // Move to next transaction in batch
-                            output_index <= output_index + 1'b1;
-                        end
-                    end
                 end
                 
                 default: begin
