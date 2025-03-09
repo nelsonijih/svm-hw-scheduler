@@ -15,6 +15,7 @@ module tb_svm_scheduler;
     parameter MAX_PENDING_TRANSACTIONS = 16;
     parameter INSERTION_QUEUE_DEPTH = 8;
     parameter SIM_TIMEOUT = 10000; // Simulation timeout in clock cycles
+    parameter DEBUG_ENABLE = 1;    // Enable debug output
     
     // Clock and reset
     reg clk;
@@ -42,12 +43,24 @@ module tb_svm_scheduler;
     wire [31:0] queue_occupancy;
     wire [31:0] transactions_processed;
     
-    // Transaction tracking
+    // Performance monitoring
     reg [31:0] total_transactions;
     reg [31:0] prev_transactions;
+    reg [31:0] total_batches;
     
     // Simulation timeout counter
     reg [31:0] timeout_counter;
+    
+    // Monitor batch completions
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            total_batches <= 32'd0;
+        end else if (svm_scheduler.batch_completed) begin
+            total_batches <= total_batches + 32'd1;
+            $display("Time %0t: Batch %0d completed with %0d transactions", 
+                     $time, total_batches + 32'd1, transactions_processed);
+        end
+    end
     
     // Monitor transactions processed
     always @(posedge clk) begin
@@ -555,6 +568,8 @@ module tb_svm_scheduler;
         $display("Rejected Transactions: %0d", filter_hits);
         $display("Final Queue Occupancy: %0d", queue_occupancy);
         $display("Total Transactions Processed: %0d", total_transactions);
+        $display("Total Batches Created: %0d", total_batches);
+        $display("Average Transactions per Batch: %.2f", total_transactions / (total_batches > 0 ? total_batches : 1));
         
         // End simulation
         #100 $finish;
