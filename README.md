@@ -48,8 +48,6 @@ The project has been updated with a simplified architecture that improves hardwa
 - cd to svm-hw-schduler
 - type `make sim`to run simulation
 - type `make wave` to view the simulation in waveform
-- type `make simplified` to run the simplified architecture testbench
-- type `make wave-simplified` to view the simplified architecture waveform
 
 ## Tests
 The test bench contains several transactions tests that conflict and some that do not
