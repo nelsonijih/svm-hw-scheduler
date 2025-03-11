@@ -54,25 +54,10 @@ The test bench contains several transactions tests that conflict and some that d
 conflict. 
 ### Running Additional Tests
 ```bash
-# Run all tests (including new testbenches)
-make test_all
-
-# Run and view conflict checker tests
-make test_conflict
-make wave_conflict
-
-# Run and view filter engine tests
-make test_filter
-make wave_filter
 
 # Run original scheduler tests
 make sim
 make wave
-
-# Run simplified architecture tests
-make simplified
-make wave-simplified
-```
 
 Blow is simulation sample output
 <img width="1438" alt="svm-schduler-sim" src="https://github.com/user-attachments/assets/190b9e65-7967-43a9-8890-91d06e5bdaa5" />
