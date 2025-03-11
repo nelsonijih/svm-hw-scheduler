@@ -48,33 +48,16 @@ The project has been updated with a simplified architecture that improves hardwa
 - cd to svm-hw-schduler
 - type `make sim`to run simulation
 - type `make wave` to view the simulation in waveform
-- type `make simplified` to run the simplified architecture testbench
-- type `make wave-simplified` to view the simplified architecture waveform
 
 ## Tests
 The test bench contains several transactions tests that conflict and some that do not
 conflict. 
 ### Running Additional Tests
 ```bash
-# Run all tests (including new testbenches)
-make test_all
-
-# Run and view conflict checker tests
-make test_conflict
-make wave_conflict
-
-# Run and view filter engine tests
-make test_filter
-make wave_filter
 
 # Run original scheduler tests
 make sim
 make wave
-
-# Run simplified architecture tests
-make simplified
-make wave-simplified
-```
 
 Blow is simulation sample output
 <img width="1438" alt="svm-schduler-sim" src="https://github.com/user-attachments/assets/190b9e65-7967-43a9-8890-91d06e5bdaa5" />
@@ -141,7 +124,7 @@ Blow is simulation sample output
 
 ## Testing
 
-### Additional Testbenches
+### TODO - Additional Testbenches
 1. `tb/tb_conflict_checker.v`
    - Tests basic transaction forwarding
    - Verifies prefetch buffer functionality
