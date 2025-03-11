@@ -52,8 +52,8 @@ always @(posedge clk) begin
         if (s_axis_tvalid && s_axis_tready)
             total_transactions_submitted <= total_transactions_submitted + 1;
             
-        // Count total conflicted transactions (sum of all conflict types)
-        total_transactions_conflicted <= raw_conflicts + waw_conflicts + war_conflicts;
+        // Count unique conflicted transactions (avoid double-counting multi-conflict transactions)
+        total_transactions_conflicted <= filter_hits;  // filter_hits tracks unique conflicted transactions
             
         // Count batched transactions
         if (transactions_batched > total_transactions_batched)
@@ -180,7 +180,72 @@ initial begin
         s_axis_tvalid = 0;
     end
     
-    // Test Case 7: Back pressure
+    // Test Case 2: RAW Conflict
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h2;
+    s_axis_tdata_read_dependencies = 2'b10;   // Read from T1's write location
+    s_axis_tdata_write_dependencies = 0;
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    #20;  // Wait for conflict detection
+    
+    // Test Case 3: WAW Conflict
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h3;
+    s_axis_tdata_read_dependencies = 0;
+    s_axis_tdata_write_dependencies = 2'b10;  // Write to T1's write location
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    #20;  // Wait for conflict detection
+    
+    // Test Case 4: WAR Conflict
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h4;
+    s_axis_tdata_read_dependencies = 0;
+    s_axis_tdata_write_dependencies = 2'b01;  // Write to T1's read location
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    #20;  // Wait for conflict detection
+    
+    // Test Case 7: Multiple conflicts in single transaction
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h7;
+    s_axis_tdata_read_dependencies = 2'b10;   // Read from T1's write location (RAW)
+    s_axis_tdata_write_dependencies = 2'b11;  // Write to both T1's read and write locations (WAW+WAR)
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    #20;  // Wait for conflict detection
+    
+    // Test Case 8: Another WAW conflict
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h8;
+    s_axis_tdata_read_dependencies = 0;
+    s_axis_tdata_write_dependencies = 2'b10;  // Write to T1's write location (WAW)
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    #20;  // Wait for conflict detection
+    
+    // Test Case 9: Another RAW conflict
+    @(posedge clk);
+    s_axis_tdata_owner_programID = 64'h9;
+    s_axis_tdata_read_dependencies = 2'b10;  // Read from T1's write location (RAW)
+    s_axis_tdata_write_dependencies = 0;
+    s_axis_tvalid = 1;
+    @(posedge clk);
+    while (!s_axis_tready) @(posedge clk);
+    s_axis_tvalid = 0;
+    
+    // Test Case 8: Back pressure
     m_axis_tready = 0;
     repeat(10) @(posedge clk);
     m_axis_tready = 1;
@@ -201,7 +266,7 @@ initial begin
     $display("  RAW conflicts: %0d", raw_conflicts);
     $display("  WAW conflicts: %0d", waw_conflicts);
     $display("  WAR conflicts: %0d", war_conflicts);
-    $display("  Filter hits:   %0d", filter_hits);
+    $display("  Unique transaction conflicts: %0d", filter_hits);
     $display("\nQueue Statistics:");
     $display("  Queue occupancy:        %0d", queue_occupancy);
     $display("  Transactions processed: %0d", transactions_processed);
