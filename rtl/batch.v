@@ -2,7 +2,8 @@ module batch #(
     parameter MAX_DEPENDENCIES = 256,
     parameter MAX_BATCH_SIZE = 8,
     parameter MIN_BATCH_SIZE = 2,  // Minimum transactions before timeout can trigger
-    parameter BATCH_TIMEOUT_CYCLES = 100
+    parameter BATCH_TIMEOUT_CYCLES = 100,
+    parameter DEBUG_ENABLE = 1
 ) (
     input wire clk,
     input wire rst_n,
@@ -25,7 +26,7 @@ module batch #(
     output reg batch_completed,
     
     // Performance monitoring
-    output reg [31:0] transactions_processed,
+    output reg [31:0] transactions_batched,    // Total transactions in completed batches
     output wire transaction_accepted
 );
 
@@ -64,7 +65,7 @@ module batch #(
             batch_count <= 4'd0;
             output_index <= 4'd0;
             timeout_counter <= 32'd0;
-            transactions_processed <= 32'd0;
+            transactions_batched <= 32'd0;
             debug_cycles <= 32'd0;
             batch_completed <= 1'b0;
         end
@@ -74,7 +75,26 @@ module batch #(
             
             // Default assignments
             s_axis_tready <= 1'b0;
-            batch_completed <= 1'b0; // Default to not completed
+            batch_completed <= 1'b0;
+            
+            // Reset counters when starting a new batch
+            if (state == IDLE && s_axis_tvalid && s_axis_tready) begin
+                // Reset batch-related counters
+                batch_count <= 4'd0;
+                output_index <= 4'd0;
+            end
+            
+            // Debug output when transactions are successfully output
+            if (state == OUTPUT && m_axis_tvalid && m_axis_tready) begin
+                if (DEBUG_ENABLE) begin
+                    $display("Transaction output from batch: index=%0d, batch_size=%0d", 
+                             output_index, batch_count);
+                    $display("  Total transactions: %0d", transactions_batched);
+                end
+            end
+            
+            // Clear batch_completed by default
+            batch_completed <= 1'b0;
             
             case (state)
                 IDLE: begin
@@ -82,7 +102,7 @@ module batch #(
                     batch_count <= 4'd0;
                     output_index <= 4'd0;
                     timeout_counter <= 32'd0;
-                    
+                    batch_completed <= 1'b0;
                     // Ready to accept new transaction
                     s_axis_tready <= 1'b1;
                     m_axis_tvalid <= 1'b0;
@@ -121,10 +141,11 @@ module batch #(
                             batch_count <= batch_count + 1'b1;
                             timeout_counter <= 32'd0;
                             
-                            // Debug output
+                            // Debug output for transaction tracking
                             $display("\nAdding transaction to batch:");
-                            $display("  Current batch size: %0d", batch_count);
+                            $display("  Current batch size: %0d", batch_count + 1'b1);
                             $display("  Max batch size: %0d", MAX_BATCH_SIZE);
+                            $display("  Total transactions batched: %0d", transactions_batched);
                             
                             // If this transaction fills the batch, move to output
                             if (batch_count + 1'b1 >= MAX_BATCH_SIZE) begin
@@ -163,31 +184,38 @@ module batch #(
                         m_axis_tdata_write_dependencies <= batch_write_deps[output_index];
                         
                         if (m_axis_tready) begin
-                            // Transaction accepted
-                            transactions_processed <= transactions_processed + 1'b1;
-                            
                             // Debug output
                             $display("\nOutputting transaction from batch:");
                             $display("  Transaction index: %0d", output_index);
                             $display("  Batch size: %0d", batch_count);
                             
+                            // Update transaction count for each successful output
+                            transactions_batched <= transactions_batched + 1;
+                            
+                            // Display transaction output
+                            if (DEBUG_ENABLE) begin
+                                $display("Transaction output from batch: index=%0d, batch_size=%0d", output_index, batch_count);
+                                $display("  Total transactions: %0d", transactions_batched + 1);
+                            end
+
                             if (output_index == batch_count - 1) begin
                                 // All transactions in batch have been output
                                 m_axis_tvalid <= 1'b0;
                                 state <= IDLE;
                                 s_axis_tready <= 1'b1;
-                                
-                                // Signal batch completion
+                                output_index <= 4'd0;
                                 batch_completed <= 1'b1;
                                 
-                                // Debug output
-                                $display("\nBatch completed:");
-                                $display("  Total transactions: %0d", batch_count);
-                                $display("  Was full: %s", batch_count == MAX_BATCH_SIZE ? "yes" : "no");
-                            end
-                            else begin
+                                if (DEBUG_ENABLE) begin
+                                    $display("\nBatch completed:");
+                                    $display("  Transactions in this batch: %0d", batch_count);
+                                    $display("  Total transactions in batches: %0d", transactions_batched + 1);
+                                    $display("  Was full: %s", batch_count >= MAX_BATCH_SIZE ? "yes" : "no");
+                                    $display("  Debug: transactions_batched=%0d", transactions_batched + 1);
+                                end
+                            end else begin
                                 // Move to next transaction in batch
-                                output_index <= output_index + 1'b1;
+                                output_index <= output_index + 1;
                             end
                         end
                     end
@@ -196,11 +224,11 @@ module batch #(
                         state <= IDLE;
                         s_axis_tready <= 1'b1;
                         m_axis_tvalid <= 1'b0;
-                            
-                            // Print detailed batch information
-                            $display("\n===============FOR SIMULATION ONLY. REMOVE FOR SYNC====================================");
-                            $display("BATCH COMPLETED at time %0t", $time);
-                            $display("Total transactions in batch: %0d", batch_count);
+                        
+                        // Print detailed batch information
+                        $display("\n===============FOR SIMULATION ONLY. REMOVE FOR SYNC====================================");
+                        $display("BATCH COMPLETED at time %0t", $time);
+                        $display("Total transactions in batch: %0d", batch_count);
                             $display("Maximum allowed batch size: %0d", MAX_BATCH_SIZE);
                             $display("Batch completed due to: %s", 
                                 batch_count >= MAX_BATCH_SIZE ? "MAX_BATCH_SIZE reached" :

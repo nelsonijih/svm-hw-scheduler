@@ -176,15 +176,24 @@ always @(posedge clk or negedge rst_n) begin
                         $display("Time %0t: Transaction ID %h accepted - no conflicts", $time, owner_pipe);
                 end else begin
                     state <= COMPLETE;
-                    // Update conflict counters here since we're skipping OUTPUT state
-                    if (has_raw_conflict) raw_conflicts <= raw_conflicts + 32'd1;
-                    if (has_waw_conflict) waw_conflicts <= waw_conflicts + 32'd1;
-                    if (has_war_conflict) war_conflicts <= war_conflicts + 32'd1;
-                    filter_hits <= filter_hits + 32'd1;
+                    // Only count as rejected if there's at least one conflict
+                    if (has_raw_conflict || has_waw_conflict || has_war_conflict) begin
+                        // Increment filter_hits only once per rejected transaction
+                        filter_hits <= filter_hits + 32'd1;
+                        // Track individual conflict types
+                        raw_conflicts <= raw_conflicts + (has_raw_conflict ? 32'd1 : 32'd0);
+                        waw_conflicts <= waw_conflicts + (has_waw_conflict ? 32'd1 : 32'd0);
+                        war_conflicts <= war_conflicts + (has_war_conflict ? 32'd1 : 32'd0);
+                    end
                     
                     if (DEBUG_ENABLE) begin
                         $display("Time %0t: Transaction ID %h REJECTED due to conflicts (RAW=%b WAW=%b WAR=%b)", 
                                  $time, owner_pipe, has_raw_conflict, has_waw_conflict, has_war_conflict);
+                        $display("  Current conflict counts - RAW: %0d, WAW: %0d, WAR: %0d, Total: %0d",
+                                 raw_conflicts + (has_raw_conflict ? 32'd1 : 32'd0),
+                                 waw_conflicts + (has_waw_conflict ? 32'd1 : 32'd0),
+                                 war_conflicts + (has_war_conflict ? 32'd1 : 32'd0),
+                                 filter_hits + 32'd1);
                     end
                 end
             end

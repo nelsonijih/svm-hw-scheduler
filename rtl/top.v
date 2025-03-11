@@ -32,11 +32,15 @@ module top #(
     output wire [31:0] war_conflicts,
     output wire [31:0] filter_hits,
     output wire [31:0] queue_occupancy,
-    output wire [31:0] transactions_processed
+    output wire [31:0] transactions_processed,  // From conflict checker - tracks total valid transactions
+    output wire [31:0] transactions_batched    // From batch module - tracks transactions in completed batches
 );
 
     // Batch completion signal
     wire batch_completed;
+    
+    // Transaction accepted signal
+    wire transaction_accepted;
     
     // Conflict checker to insertion connections
     wire conflict_checker_to_insertion_tvalid;
@@ -134,7 +138,11 @@ module top #(
         .m_axis_tdata_write_dependencies(m_axis_tdata_write_dependencies),
         
         // Batch completion signal
-        .batch_completed(batch_completed)
+        .batch_completed(batch_completed),
+        
+        // Performance monitoring
+        .transactions_batched(transactions_batched),
+        .transaction_accepted(transaction_accepted)
     );
 
 endmodule
