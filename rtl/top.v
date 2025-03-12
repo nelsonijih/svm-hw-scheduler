@@ -33,12 +33,10 @@ module top #(
     output wire [31:0] filter_hits,
     output wire [31:0] queue_occupancy,
     output wire [31:0] transactions_processed,  // From conflict checker - tracks total valid transactions
-    output wire [31:0] transactions_batched    // From batch module - tracks transactions in completed batches
+    output wire [31:0] transactions_batched,   // From batch module - tracks transactions in completed batches
+    output wire batch_completed                // Indicates when a batch has completed
 );
 
-    // Batch completion signal
-    wire batch_completed;
-    
     // Transaction accepted signal
     wire transaction_accepted;
     
