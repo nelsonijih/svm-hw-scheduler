@@ -40,6 +40,11 @@ wire [31:0] transactions_batched;
 reg [31:0] total_transactions_submitted;
 reg [31:0] total_transactions_conflicted;
 reg [31:0] total_transactions_batched;
+reg [31:0] total_cycles;
+real simulation_time_ns;
+real transactions_per_cycle;
+real transactions_per_second;
+real throughput_gbps;  // Based on 64-bit transactions
 
 // Monitor transaction submission and completion
 always @(posedge clk) begin
@@ -96,10 +101,14 @@ top #(
     .transactions_batched(transactions_batched)
 );
 
-// Clock generation
+// Clock generation and cycle counting
 initial begin
     clk = 0;
-    forever #5 clk = ~clk;
+    total_cycles = 0;
+    forever begin
+        #5 clk = ~clk;
+        if (clk) total_cycles = total_cycles + 1;
+    end
 end
 
 // Test stimulus
@@ -253,6 +262,12 @@ initial begin
     // Wait for completion
     #1000;
     
+    // Calculate performance metrics
+    simulation_time_ns = $time / 1000.0;  // Convert to ns
+    transactions_per_cycle = total_transactions_batched * 1.0 / total_cycles;
+    transactions_per_second = (total_transactions_batched * 1_000_000_000) / simulation_time_ns;  // Convert ns to seconds
+    throughput_gbps = (total_transactions_batched * 64.0 * 1_000_000_000) / (simulation_time_ns * 1_000_000_000);  // 64-bit transactions
+    
     // Display results
     $display("\nTest completed! Performance Summary:");
     $display("----------------------------------------");
@@ -271,6 +286,12 @@ initial begin
     $display("  Queue occupancy:        %0d", queue_occupancy);
     $display("  Transactions processed: %0d", transactions_processed);
     $display("  Transactions batched:   %0d", transactions_batched);
+    $display("\nPerformance Metrics:");
+    $display("  Total clock cycles:     %0d", total_cycles);
+    $display("  Simulation time:        %.2f ns", simulation_time_ns);
+    $display("  Transactions/cycle:     %.3f", transactions_per_cycle);
+    $display("  Transactions/second:    %.2f M", transactions_per_second / 1_000_000);
+    $display("  Throughput:             %.2f Gbps", throughput_gbps);
     $display("----------------------------------------");
     
     $finish;
