@@ -60,6 +60,7 @@ wire [31:0] transactions_batched;
 reg [31:0] total_transactions_submitted;
 reg [31:0] total_transactions_conflicted;
 reg [31:0] total_transactions_batched;
+reg [31:0] total_transactions_in_batch;  // Track transactions in current batch
 reg [31:0] total_cycles;
 reg [31:0] total_batches;
 reg [31:0] current_batch_size;
@@ -93,6 +94,7 @@ always @(posedge clk) begin
         total_transactions_submitted <= 0;
         total_transactions_conflicted <= 0;
         total_transactions_batched <= 0;
+        total_transactions_in_batch <= 0;
         total_batches <= 0;
         current_batch_size <= 0;
         max_batch_size_seen <= 0;
@@ -153,8 +155,22 @@ always @(posedge clk) begin
         if (m_axis_tvalid && m_axis_tready) begin
             // Record completion time for each transaction
             transaction_complete_time[total_transactions_batched] <= $time;
-            total_transactions_batched <= total_transactions_batched + 1;
+            total_transactions_batched <= transactions_batched;  // Use DUT counter
             current_batch_size <= current_batch_size + 1;
+            if (DEBUG_ENABLE)
+                $display("Time %0t: Transaction completed (total batched: %0d)", $time, transactions_batched);
+        end
+        
+        // Update batch statistics when batch completes
+        if (batch_completed) begin
+            // Ensure we capture the final transaction in the batch
+            total_transactions_batched <= transactions_batched;
+            total_batches <= total_batches + 1;
+            if (DEBUG_ENABLE)
+                $display("Time %0t: Batch %0d completed with %0d transactions (total batched: %0d)", 
+                    $time, total_batches + 1, current_batch_size, transactions_batched);
+            // Reset current batch counters
+            current_batch_size <= 0;
         end
             
         // Handle batch completion
@@ -439,7 +455,7 @@ initial begin
     if (total_transactions_batched > 0) begin
         for (integer i = 0; i < total_transactions_batched; i = i + 1) begin
             real latency;
-            latency = (transaction_complete_time[i] - transaction_submit_time[i]) / 1000.0;  // Convert to ns
+            latency = (transaction_complete_time[i] - transaction_submit_time[i]) / 1_000_000_000.0;  // Convert ps to ms
             avg_transaction_latency = avg_transaction_latency + latency;
             
             if (latency < min_transaction_latency && latency > 0)
@@ -461,7 +477,12 @@ initial begin
     $display("  Submitted:  %0d", total_transactions_submitted);
     $display("  Conflicted: %0d (%.2f%%)", total_transactions_conflicted,
              total_transactions_submitted > 0 ? (total_transactions_conflicted * 100.0 / total_transactions_submitted) : 0);
-    $display("  Batched:    %0d (%.2f%%)", total_transactions_batched,
+    $display("  Conflict Resolution:");
+    $display("    Initially conflicted but later batched: %0d", 
+             total_transactions_conflicted - (total_transactions_submitted - total_transactions_batched));
+    $display("    Permanently rejected due to conflicts: %0d",
+             total_transactions_submitted - total_transactions_batched);
+    $display("  Successfully batched: %0d (%.2f%%)", total_transactions_batched,
              total_transactions_submitted > 0 ? (total_transactions_batched * 100.0 / total_transactions_submitted) : 0);
     $display("\nDetailed Conflict Analysis:");
     $display("  Total conflicts by type:");
@@ -510,9 +531,9 @@ initial begin
     $display("  Avg formation time:     %.2f ns", avg_batch_formation_time);
     
     $display("\nLatency Statistics:");
-    $display("  Average latency:        %.2f ns", avg_transaction_latency);
-    $display("  Min latency:            %.2f ns", min_transaction_latency);
-    $display("  Max latency:            %.2f ns", max_transaction_latency);
+    $display("  Average latency:        %.2f ms", avg_transaction_latency / 1_000_000);
+    $display("  Min latency:            %.2f ms", min_transaction_latency / 1_000_000);
+    $display("  Max latency:            %.2f ms", max_transaction_latency / 1_000_000);
     $display("----------------------------------------");
     
     $finish;
