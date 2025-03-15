@@ -25,6 +25,7 @@ reg [31:0] prev_waw_conflicts;
 reg [31:0] prev_war_conflicts;
 localparam MAX_DEPENDENCIES = 256;        // Full dependency vector width
 localparam MAX_BATCH_SIZE = 8;            // Maximum transactions per batch
+localparam MIN_BATCH_SIZE = 2;            // Minimum transactions before timeout
 localparam BATCH_TIMEOUT_CYCLES = 100;     // Cycles before forcing batch output
 localparam MAX_PENDING_TRANSACTIONS = 16;  // Maximum pending transactions
 localparam INSERTION_QUEUE_DEPTH = 8;      // Depth of insertion queue
@@ -392,7 +393,167 @@ initial begin
     s_axis_tvalid = 0;
     #20;  // Wait for conflict detection
     
-    // Test Case 7: Multiple conflicts in single transaction
+    // Test Case 7: Back-to-back transactions with varying conflicts
+    $display("\nTest Case 7: Back-to-back transactions with varying conflicts");
+    repeat(5) begin
+        // Transaction with RAW conflict
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = 64'h7;
+        s_axis_tdata_read_dependencies = 256'h1;
+        s_axis_tdata_write_dependencies = 256'h0;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+        
+        // Transaction with WAW conflict
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = 64'h8;
+        s_axis_tdata_read_dependencies = 256'h0;
+        s_axis_tdata_write_dependencies = 256'h1;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+        
+        // Transaction with no conflicts
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = 64'h9;
+        s_axis_tdata_read_dependencies = 256'h2;
+        s_axis_tdata_write_dependencies = 256'h2;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+    end
+    s_axis_tvalid = 0;
+    repeat(50) @(posedge clk);
+
+    // Test Case 8: Maximum batch size stress test
+    $display("\nTest Case 8: Maximum batch size stress test");
+    repeat(MAX_BATCH_SIZE * 2) begin
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+        s_axis_tdata_read_dependencies = 256'h4 << (s_axis_tdata_owner_programID % 32);  // Rotating pattern
+        s_axis_tdata_write_dependencies = 256'h8 << (s_axis_tdata_owner_programID % 32);
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+    end
+    s_axis_tvalid = 0;
+    repeat(50) @(posedge clk);
+
+    // Test Case 9: Rapid conflict pattern changes
+    $display("\nTest Case 9: Rapid conflict pattern changes");
+    repeat(20) begin
+        // Alternate between RAW, WAW, and WAR conflicts rapidly
+        s_axis_tvalid = 1;
+        case(s_axis_tdata_owner_programID % 3)
+            0: begin  // RAW
+                s_axis_tdata_read_dependencies = 256'hF;
+                s_axis_tdata_write_dependencies = 256'h0;
+            end
+            1: begin  // WAW
+                s_axis_tdata_read_dependencies = 256'h0;
+                s_axis_tdata_write_dependencies = 256'hF;
+            end
+            2: begin  // WAR
+                s_axis_tdata_read_dependencies = 256'h0;
+                s_axis_tdata_write_dependencies = 256'hF0;
+            end
+        endcase
+        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+    end
+    s_axis_tvalid = 0;
+    repeat(50) @(posedge clk);
+
+    // Test Case 10: Batch timeout testing
+    $display("\nTest Case 10: Batch timeout testing");
+    repeat(MIN_BATCH_SIZE - 1) begin  // Submit fewer than MIN_BATCH_SIZE
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+        s_axis_tdata_read_dependencies = 256'h100 << (s_axis_tdata_owner_programID % 8);
+        s_axis_tdata_write_dependencies = 256'h200 << (s_axis_tdata_owner_programID % 8);
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+    end
+    s_axis_tvalid = 0;
+    repeat(BATCH_TIMEOUT_CYCLES * 3) @(posedge clk);  // Wait for extended timeout
+
+    // Test Case 11: Insertion queue stress test
+    $display("\nTest Case 11: Insertion queue stress test");
+    repeat(INSERTION_QUEUE_DEPTH * 2) begin
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+        // No conflicts to ensure transactions reach insertion stage
+        s_axis_tdata_read_dependencies = 256'h1000 << (s_axis_tdata_owner_programID % 16);
+        s_axis_tdata_write_dependencies = 256'h2000 << (s_axis_tdata_owner_programID % 16);
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+    end
+    s_axis_tvalid = 0;
+    repeat(50) @(posedge clk);
+
+    // Test Case 12: Mixed conflict and backpressure test
+    $display("\nTest Case 12: Mixed conflict and backpressure test");
+    fork
+        begin
+            repeat(30) begin
+                s_axis_tvalid = 1;
+                s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+                // Randomly choose between conflict types
+                case($random % 4)
+                    0: begin  // No conflict
+                        s_axis_tdata_read_dependencies = 256'h10000 << ($random % 32);
+                        s_axis_tdata_write_dependencies = 256'h20000 << ($random % 32);
+                    end
+                    1: begin  // RAW conflict
+                        s_axis_tdata_read_dependencies = 256'hF;
+                        s_axis_tdata_write_dependencies = 256'h0;
+                    end
+                    2: begin  // WAW conflict
+                        s_axis_tdata_read_dependencies = 256'h0;
+                        s_axis_tdata_write_dependencies = 256'hF;
+                    end
+                    3: begin  // WAR conflict
+                        s_axis_tdata_read_dependencies = 256'h0;
+                        s_axis_tdata_write_dependencies = 256'hF0;
+                    end
+                endcase
+                @(posedge clk);
+                while (!s_axis_tready) @(posedge clk);
+            end
+            s_axis_tvalid = 0;
+        end
+        begin
+            repeat(30) begin
+                // Randomly toggle m_axis_tready to create backpressure
+                repeat($random % 5) @(posedge clk);
+                m_axis_tready = $random % 2;
+            end
+            m_axis_tready = 1;
+        end
+    join
+    repeat(100) @(posedge clk);  // Allow system to settle
+
+    // Test Case 13: Multiple conflicts with resubmission
+    $display("\nTest Case 13: Multiple conflicts with resubmission");
+    repeat(10) begin
+        // Submit transaction that will conflict
+        s_axis_tvalid = 1;
+        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
+        s_axis_tdata_read_dependencies = 256'hFF;
+        s_axis_tdata_write_dependencies = 256'hFF;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+        
+        // Immediate resubmission of same transaction
+        repeat(3) begin
+            s_axis_tvalid = 1;
+            @(posedge clk);
+            while (!s_axis_tready) @(posedge clk);
+        end
+        
+        // Wait for potential batch completion
+        s_axis_tvalid = 0;
+        repeat(20) @(posedge clk);
+    end
+    repeat(50) @(posedge clk);
     @(posedge clk);
     s_axis_tdata_owner_programID = 64'h7;
     s_axis_tdata_read_dependencies = 2'b10;   // Read from T1's write location (RAW)
