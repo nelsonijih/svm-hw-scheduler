@@ -4,6 +4,14 @@ module tb_svm_scheduler;
 
 // Parameters
 parameter DEBUG_ENABLE = 1;  // Enable debug output
+parameter NUM_TEST_CASES = 500;  // Number of test cases to generate
+parameter NUM_PARALLEL_CHECKS = 4;   // Number of parallel conflict checkers
+parameter CHUNK_SIZE = MAX_DEPENDENCIES/NUM_PARALLEL_CHECKS; // Size of each chunk for parallel processing
+parameter PATTERN_TYPES = 8;  // Different types of access patterns
+
+// Test pattern generation parameters
+reg [31:0] test_case_counter;
+reg [2:0] pattern_type;  // Current pattern type being tested
 
 // Conflict combination counters
 reg [31:0] raw_only_conflicts;
@@ -156,20 +164,21 @@ always @(posedge clk) begin
         if (m_axis_tvalid && m_axis_tready) begin
             // Record completion time for each transaction
             transaction_complete_time[total_transactions_batched] <= $time;
-            total_transactions_batched <= transactions_batched;  // Use DUT counter
-            current_batch_size <= current_batch_size + 1;
-            if (DEBUG_ENABLE)
-                $display("Time %0t: Transaction completed (total batched: %0d)", $time, transactions_batched);
+            // Only count unique transactions that complete
+            if (total_transactions_batched < total_transactions_submitted) begin
+                total_transactions_batched <= total_transactions_batched + 1;
+                current_batch_size <= current_batch_size + 1;
+                if (DEBUG_ENABLE)
+                    $display("Time %0t: Transaction completed (total batched: %0d)", $time, total_transactions_batched);
+            end
         end
         
         // Update batch statistics when batch completes
         if (batch_completed) begin
-            // Ensure we capture the final transaction in the batch
-            total_transactions_batched <= transactions_batched;
             total_batches <= total_batches + 1;
             if (DEBUG_ENABLE)
                 $display("Time %0t: Batch %0d completed with %0d transactions (total batched: %0d)", 
-                    $time, total_batches + 1, current_batch_size, transactions_batched);
+                    $time, total_batches + 1, current_batch_size, total_transactions_batched);
             // Reset current batch counters
             current_batch_size <= 0;
         end
@@ -248,12 +257,14 @@ initial begin
     end
 end
 
-// Test stimulus
+    // Test stimulus
 initial begin
-    // Initialize signals
+    // Initialize signals and test counters
     rst_n = 0;
     s_axis_tdata_owner_programID = 0;
     s_axis_tdata_read_dependencies = 0;
+    test_case_counter = 0;
+    pattern_type = 0;
     s_axis_tdata_write_dependencies = 0;
     s_axis_tvalid = 0;
     m_axis_tready = 1;
@@ -261,337 +272,90 @@ initial begin
     // Reset sequence
     #100 rst_n = 1;
     
-    // Test Case 1: No conflicts
-    // T1: Read bit 0, Write bit 1
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h1;
-    s_axis_tdata_read_dependencies = 1'b1;
-    s_axis_tdata_write_dependencies = 2'b10;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    
-    // Test Case 2: RAW Conflict (handled directly by conflict_checker)
-    // T2: Read bit 1 (conflicts with T1's write)
-    #20;
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h2;
-    s_axis_tdata_read_dependencies = 2'b10;
-    s_axis_tdata_write_dependencies = 0;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    
-    // Test Case 3: WAW Conflict (handled directly by conflict_checker)
-    // T3: Write bit 1 (conflicts with T1's write)
-    #20;
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h3;
-    s_axis_tdata_read_dependencies = 0;
-    s_axis_tdata_write_dependencies = 2'b10;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    
-    // Test Case 4: WAR Conflict (handled directly by conflict_checker)
-    // T4: Write bit 0 (conflicts with T1's read)
-    #20;
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h4;
-    s_axis_tdata_read_dependencies = 0;
-    s_axis_tdata_write_dependencies = 1'b1;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    
-    // Test Case 5: Batch timeout
-    // Wait for BATCH_TIMEOUT_CYCLES
-    repeat(BATCH_TIMEOUT_CYCLES + 10) @(posedge clk);
-    
-    // Test Case 6: Full batch with no conflicts
-    // Send MAX_BATCH_SIZE transactions without conflicts
-    repeat(MAX_BATCH_SIZE) begin
-        @(posedge clk);
-        s_axis_tdata_owner_programID = 64'h5;
-        s_axis_tdata_read_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_write_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_read_dependencies[MAX_DEPENDENCIES-1] = 1'b1;
-        s_axis_tvalid = 1;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        s_axis_tvalid = 0;
-    end
-    
-    // Test Case 7: Stress test with mixed conflicts
-    // Send rapid transactions with various dependency patterns
-    repeat(8) begin
-        @(posedge clk);
-        s_axis_tdata_owner_programID = 64'h6;
-        // Create overlapping read/write regions
-        s_axis_tdata_read_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_write_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_read_dependencies[3:0] = 4'b1111;  // Read first 4 bits
-        s_axis_tdata_write_dependencies[7:4] = 4'b1111; // Write next 4 bits
-        s_axis_tvalid = 1;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        s_axis_tvalid = 0;
-    end
-    
-    // Test Case 8: Back-to-back transactions
-    // Test scheduler's ability to handle consecutive transactions
-    repeat(4) begin
-        @(posedge clk);
-        s_axis_tdata_owner_programID = 64'h7;
-        // Alternate between read-heavy and write-heavy patterns
-        s_axis_tdata_read_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_write_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_read_dependencies[15:0] = 16'hFFFF;  // Read first 16 bits
-        s_axis_tvalid = 1;
-        @(posedge clk);
-        s_axis_tdata_read_dependencies = {MAX_DEPENDENCIES{1'b0}};
-        s_axis_tdata_write_dependencies[15:0] = 16'hFFFF;  // Write first 16 bits
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        s_axis_tvalid = 0;
-    end
-    
-    // Test Case 2: RAW Conflict
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h2;
-    s_axis_tdata_read_dependencies = 2'b10;   // Read from T1's write location
-    s_axis_tdata_write_dependencies = 0;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    #20;  // Wait for conflict detection
-    
-    // Test Case 3: WAW Conflict
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h3;
-    s_axis_tdata_read_dependencies = 0;
-    s_axis_tdata_write_dependencies = 2'b10;  // Write to T1's write location
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    #20;  // Wait for conflict detection
-    
-    // Test Case 4: WAR Conflict
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h4;
-    s_axis_tdata_read_dependencies = 0;
-    s_axis_tdata_write_dependencies = 2'b01;  // Write to T1's read location
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    #20;  // Wait for conflict detection
-    
-    // Test Case 7: Back-to-back transactions with varying conflicts
-    $display("\nTest Case 7: Back-to-back transactions with varying conflicts");
-    repeat(5) begin
-        // Transaction with RAW conflict
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = 64'h7;
-        s_axis_tdata_read_dependencies = 256'h1;
-        s_axis_tdata_write_dependencies = 256'h0;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        
-        // Transaction with WAW conflict
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = 64'h8;
-        s_axis_tdata_read_dependencies = 256'h0;
-        s_axis_tdata_write_dependencies = 256'h1;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        
-        // Transaction with no conflicts
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = 64'h9;
-        s_axis_tdata_read_dependencies = 256'h2;
-        s_axis_tdata_write_dependencies = 256'h2;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-    end
-    s_axis_tvalid = 0;
-    repeat(50) @(posedge clk);
-
-    // Test Case 8: Maximum batch size stress test
-    $display("\nTest Case 8: Maximum batch size stress test");
-    repeat(MAX_BATCH_SIZE * 2) begin
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-        s_axis_tdata_read_dependencies = 256'h4 << (s_axis_tdata_owner_programID % 32);  // Rotating pattern
-        s_axis_tdata_write_dependencies = 256'h8 << (s_axis_tdata_owner_programID % 32);
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-    end
-    s_axis_tvalid = 0;
-    repeat(50) @(posedge clk);
-
-    // Test Case 9: Rapid conflict pattern changes
-    $display("\nTest Case 9: Rapid conflict pattern changes");
-    repeat(20) begin
-        // Alternate between RAW, WAW, and WAR conflicts rapidly
-        s_axis_tvalid = 1;
-        case(s_axis_tdata_owner_programID % 3)
-            0: begin  // RAW
-                s_axis_tdata_read_dependencies = 256'hF;
-                s_axis_tdata_write_dependencies = 256'h0;
-            end
-            1: begin  // WAW
-                s_axis_tdata_read_dependencies = 256'h0;
-                s_axis_tdata_write_dependencies = 256'hF;
-            end
-            2: begin  // WAR
-                s_axis_tdata_read_dependencies = 256'h0;
-                s_axis_tdata_write_dependencies = 256'hF0;
-            end
-        endcase
-        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-    end
-    s_axis_tvalid = 0;
-    repeat(50) @(posedge clk);
-
-    // Test Case 10: Batch timeout testing
-    $display("\nTest Case 10: Batch timeout testing");
-    repeat(MIN_BATCH_SIZE - 1) begin  // Submit fewer than MIN_BATCH_SIZE
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-        s_axis_tdata_read_dependencies = 256'h100 << (s_axis_tdata_owner_programID % 8);
-        s_axis_tdata_write_dependencies = 256'h200 << (s_axis_tdata_owner_programID % 8);
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-    end
-    s_axis_tvalid = 0;
-    repeat(BATCH_TIMEOUT_CYCLES * 3) @(posedge clk);  // Wait for extended timeout
-
-    // Test Case 11: Insertion queue stress test
-    $display("\nTest Case 11: Insertion queue stress test");
-    repeat(INSERTION_QUEUE_DEPTH * 2) begin
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-        // No conflicts to ensure transactions reach insertion stage
-        s_axis_tdata_read_dependencies = 256'h1000 << (s_axis_tdata_owner_programID % 16);
-        s_axis_tdata_write_dependencies = 256'h2000 << (s_axis_tdata_owner_programID % 16);
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-    end
-    s_axis_tvalid = 0;
-    repeat(50) @(posedge clk);
-
-    // Test Case 12: Mixed conflict and backpressure test
-    $display("\nTest Case 12: Mixed conflict and backpressure test");
-    fork
-        begin
-            repeat(30) begin
-                s_axis_tvalid = 1;
-                s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-                // Randomly choose between conflict types
-                case($random % 4)
-                    0: begin  // No conflict
-                        s_axis_tdata_read_dependencies = 256'h10000 << ($random % 32);
-                        s_axis_tdata_write_dependencies = 256'h20000 << ($random % 32);
-                    end
-                    1: begin  // RAW conflict
-                        s_axis_tdata_read_dependencies = 256'hF;
-                        s_axis_tdata_write_dependencies = 256'h0;
-                    end
-                    2: begin  // WAW conflict
-                        s_axis_tdata_read_dependencies = 256'h0;
-                        s_axis_tdata_write_dependencies = 256'hF;
-                    end
-                    3: begin  // WAR conflict
-                        s_axis_tdata_read_dependencies = 256'h0;
-                        s_axis_tdata_write_dependencies = 256'hF0;
-                    end
-                endcase
-                @(posedge clk);
-                while (!s_axis_tready) @(posedge clk);
-            end
-            s_axis_tvalid = 0;
-        end
-        begin
-            repeat(30) begin
-                // Randomly toggle m_axis_tready to create backpressure
-                repeat($random % 5) @(posedge clk);
-                m_axis_tready = $random % 2;
-            end
-            m_axis_tready = 1;
-        end
-    join
-    repeat(100) @(posedge clk);  // Allow system to settle
-
-    // Test Case 13: Multiple conflicts with resubmission
-    $display("\nTest Case 13: Multiple conflicts with resubmission");
-    repeat(10) begin
-        // Submit transaction that will conflict
-        s_axis_tvalid = 1;
-        s_axis_tdata_owner_programID = s_axis_tdata_owner_programID + 1;
-        s_axis_tdata_read_dependencies = 256'hFF;
-        s_axis_tdata_write_dependencies = 256'hFF;
-        @(posedge clk);
-        while (!s_axis_tready) @(posedge clk);
-        
-        // Immediate resubmission of same transaction
-        repeat(3) begin
-            s_axis_tvalid = 1;
-            @(posedge clk);
-            while (!s_axis_tready) @(posedge clk);
-        end
-        
-        // Wait for potential batch completion
-        s_axis_tvalid = 0;
-        repeat(20) @(posedge clk);
-    end
-    repeat(50) @(posedge clk);
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h7;
-    s_axis_tdata_read_dependencies = 2'b10;   // Read from T1's write location (RAW)
-    s_axis_tdata_write_dependencies = 2'b11;  // Write to both T1's read and write locations (WAW+WAR)
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    #20;  // Wait for conflict detection
-    
-    // Test Case 8: Another WAW conflict
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h8;
-    s_axis_tdata_read_dependencies = 0;
-    s_axis_tdata_write_dependencies = 2'b10;  // Write to T1's write location (WAW)
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    #20;  // Wait for conflict detection
-    
-    // Test Case 9: Another RAW conflict
-    @(posedge clk);
-    s_axis_tdata_owner_programID = 64'h9;
-    s_axis_tdata_read_dependencies = 2'b10;  // Read from T1's write location (RAW)
-    s_axis_tdata_write_dependencies = 0;
-    s_axis_tvalid = 1;
-    @(posedge clk);
-    while (!s_axis_tready) @(posedge clk);
-    s_axis_tvalid = 0;
-    
-    // Test Case 8: Back pressure
-    m_axis_tready = 0;
+    // Wait after reset
     repeat(10) @(posedge clk);
-    m_axis_tready = 1;
+    
+    // Generate test patterns
+    $display("Starting test pattern generation for %d test cases...", NUM_TEST_CASES);
+    
+    while (test_case_counter < NUM_TEST_CASES) begin
+        // Select pattern type based on counter
+        pattern_type = test_case_counter % PATTERN_TYPES;
+        
+        // Wait for ready signal before attempting submission
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+        
+        // Generate the pattern with valid=0 first
+        s_axis_tvalid = 0;
+        case (pattern_type)
+            0: generate_sequential_pattern();      // Sequential access pattern
+            1: generate_strided_pattern();        // Strided access pattern
+            2: generate_random_pattern();         // Random access pattern
+            3: generate_hotspot_pattern();        // Hotspot access pattern
+            4: generate_producer_consumer();      // Producer-consumer pattern
+            5: generate_butterfly_pattern();      // Butterfly access pattern
+            6: generate_all_to_all_pattern();    // All-to-all communication pattern
+            7: generate_edge_cases();            // Edge cases and corner cases
+        endcase
+        
+        // Now assert valid and wait for handshake
+        @(posedge clk);
+        s_axis_tvalid = 1;
+        
+        // Wait for successful handshake
+        while (!(s_axis_tvalid && s_axis_tready)) @(posedge clk);
+        
+        // Clear valid after handshake
+        @(posedge clk);
+        s_axis_tvalid = 0;
+        
+        // Add delay between transactions to allow pipeline to process
+        // This helps prevent overwhelming the conflict checker and allows
+        // the batch stage to potentially complete
+        repeat(5) @(posedge clk);
+        
+        // Progress reporting every 100 transactions
+        if (test_case_counter % 100 == 0) begin
+            $display("\nProgress Update - %0d/%0d test cases (%.1f%%)", 
+                     test_case_counter, NUM_TEST_CASES, 
+                     test_case_counter * 100.0 / NUM_TEST_CASES);
+            $display("Current Pattern: %s", 
+                     pattern_type == 0 ? "Sequential" :
+                     pattern_type == 1 ? "Strided" :
+                     pattern_type == 2 ? "Random" :
+                     pattern_type == 3 ? "Hotspot" :
+                     pattern_type == 4 ? "Producer-Consumer" :
+                     pattern_type == 5 ? "Butterfly" :
+                     pattern_type == 6 ? "All-to-All" :
+                     "Edge Cases");
+            $display("Conflicts - RAW: %0d, WAW: %0d, WAR: %0d", 
+                     raw_conflicts, waw_conflicts, war_conflicts);
+            $display("Transactions - Submitted: %0d, Batched: %0d, Conflicts: %0d",
+                     total_transactions_submitted, transactions_batched, filter_hits);
+            
+            // Add extra delay after progress report to allow pipeline to catch up
+            repeat(10) @(posedge clk);
+        end
+        
+        test_case_counter = test_case_counter + 1;
+    end
+    
+    // Wait for all transactions to complete
+    repeat(100) @(posedge clk);
+    
+    // Final progress report
+    $display("\nFinal Progress Report:");
+    $display("Total transactions submitted: %0d", total_transactions_submitted);
+    $display("Total transactions batched:  %0d", total_transactions_batched);
+    $display("Total conflicts detected:    %0d", total_transactions_conflicted);
+    $display("Conflicts by type:");
+    $display("  RAW: %0d", raw_conflicts);
+    $display("  WAW: %0d", waw_conflicts);
+    $display("  WAR: %0d", war_conflicts);
     
     // Wait for completion
-    #1000;
+    repeat(100) @(posedge clk);
     
     // Calculate performance metrics
     simulation_time_ns = $time / 1000.0;  // Convert to ns
@@ -675,8 +439,8 @@ initial begin
 
     $display("\nQueue Statistics:");
     $display("  Queue occupancy:        %0d", queue_occupancy);
-    $display("  Transactions processed: %0d", transactions_processed);
-    $display("  Transactions batched:   %0d", transactions_batched);
+    $display("  Transactions processed: %0d", total_transactions_submitted);
+    $display("  Transactions batched:   %0d", total_transactions_batched);
     $display("\nPerformance Metrics:");
     $display("  Total clock cycles:     %0d", total_cycles);
     $display("  Simulation time:        %.2f ns", simulation_time_ns);
@@ -711,5 +475,156 @@ initial begin
         end
     end
 end
+
+// Pattern generation tasks
+// Pattern generation tasks
+task generate_sequential_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    begin
+        // Sequential access pattern: Each transaction depends on previous ones
+        read_mask = (1 << (test_case_counter % MAX_DEPENDENCIES));
+        write_mask = (1 << ((test_case_counter + 1) % MAX_DEPENDENCIES));
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_strided_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    begin
+        // Strided access pattern: Access memory locations with fixed stride
+        read_mask = (3 << (2 * (test_case_counter % (MAX_DEPENDENCIES/2))));
+        write_mask = (3 << (2 * ((test_case_counter + 1) % (MAX_DEPENDENCIES/2))));
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_random_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    integer seed;
+    begin
+        // Random access pattern: Randomly select dependencies
+        seed = test_case_counter;
+        read_mask = $random(seed) & ((1 << MAX_DEPENDENCIES) - 1);
+        write_mask = $random(seed) & ((1 << MAX_DEPENDENCIES) - 1);
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_hotspot_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    integer hotspot_center;
+    begin
+        // Hotspot access pattern: Concentrate accesses around certain locations
+        hotspot_center = (test_case_counter / 10) % (MAX_DEPENDENCIES - 4);
+        read_mask = 15'b111 << hotspot_center;
+        write_mask = 15'b111 << (hotspot_center + 1);
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_producer_consumer;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    begin
+        // Producer-consumer pattern: Alternating read-write dependencies
+        if (test_case_counter % 2 == 0) begin
+            // Producer writes to even locations
+            read_mask = 0;
+            write_mask = 15'b010101 << (test_case_counter % 8);
+        end else begin
+            // Consumer reads from odd locations
+            read_mask = 15'b101010 << ((test_case_counter-1) % 8);
+            write_mask = 0;
+        end
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_butterfly_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    integer stage, offset;
+    begin
+        // Butterfly pattern: Pairs of locations interact
+        stage = (test_case_counter / 2) % 4;
+        offset = 1 << stage;
+        if (test_case_counter % 2 == 0) begin
+            read_mask = (1 << (test_case_counter % MAX_DEPENDENCIES));
+            write_mask = (1 << ((test_case_counter + offset) % MAX_DEPENDENCIES));
+        end else begin
+            read_mask = (1 << ((test_case_counter - offset) % MAX_DEPENDENCIES));
+            write_mask = (1 << (test_case_counter % MAX_DEPENDENCIES));
+        end
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_all_to_all_pattern;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    begin
+        // All-to-all pattern: Each transaction touches multiple locations
+        read_mask = (15'b11111 << (test_case_counter % (MAX_DEPENDENCIES-4)));
+        write_mask = (15'b11111 << ((test_case_counter + 2) % (MAX_DEPENDENCIES-4)));
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
+
+task generate_edge_cases;
+    reg [MAX_DEPENDENCIES-1:0] read_mask, write_mask;
+    reg [2:0] case_type;
+    begin
+        // Edge cases: Various corner cases and boundary conditions
+        case_type = test_case_counter % 8;
+        case (case_type)
+            0: begin // All zeros
+                read_mask = 0;
+                write_mask = 0;
+            end
+            1: begin // All ones
+                read_mask = {MAX_DEPENDENCIES{1'b1}};
+                write_mask = {MAX_DEPENDENCIES{1'b1}};
+            end
+            2: begin // Alternating bits
+                read_mask = {MAX_DEPENDENCIES{2'b10}};
+                write_mask = {MAX_DEPENDENCIES{2'b01}};
+            end
+            3: begin // Single bit set
+                read_mask = 1 << (test_case_counter % MAX_DEPENDENCIES);
+                write_mask = 1 << ((test_case_counter + 1) % MAX_DEPENDENCIES);
+            end
+            4: begin // Walking ones
+                read_mask = 1 << (test_case_counter % MAX_DEPENDENCIES);
+                write_mask = 1 << ((test_case_counter + 1) % MAX_DEPENDENCIES);
+            end
+            5: begin // Walking zeros
+                read_mask = ~(1 << (test_case_counter % MAX_DEPENDENCIES));
+                write_mask = ~(1 << ((test_case_counter + 1) % MAX_DEPENDENCIES));
+            end
+            6: begin // Sparse pattern
+                read_mask = 1 << (test_case_counter % 4) | 1 << ((test_case_counter + 4) % 8);
+                write_mask = 1 << ((test_case_counter + 1) % 4) | 1 << ((test_case_counter + 5) % 8);
+            end
+            7: begin // Dense pattern
+                read_mask = ~(1 << (test_case_counter % 4) | 1 << ((test_case_counter + 4) % 8));
+                write_mask = ~(1 << ((test_case_counter + 1) % 4) | 1 << ((test_case_counter + 5) % 8));
+            end
+        endcase
+        s_axis_tdata_read_dependencies = read_mask;
+        s_axis_tdata_write_dependencies = write_mask;
+        s_axis_tdata_owner_programID = test_case_counter;
+    end
+endtask
 
 endmodule
