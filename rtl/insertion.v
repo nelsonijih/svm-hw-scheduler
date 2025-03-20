@@ -1,50 +1,151 @@
-///////////
-// Insertion - Accepts tx from filter engine and forwards it to batch.
-///////////
-
-module insertion (
+module insertion #(
+    parameter MAX_DEPENDENCIES = 256,
+    parameter MAX_PENDING_TRANSACTIONS = 16,
+    parameter INSERTION_QUEUE_DEPTH = 8
+) (
     input wire clk,
     input wire rst_n,
     
-    // Inputs from filter engine
-    input wire filter_ready,
-    input wire [63:0] owner_programID,
+    // AXI-Stream input interface
+    input wire s_axis_tvalid,
+    output reg s_axis_tready,
+    input wire [63:0] s_axis_tdata_owner_programID,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
+    input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
     
-    // Feedback signals from batch
-    input wire pipeline_ready,
-    input wire [63:0] accepted_id,
+    // AXI-Stream output interface
+    output reg m_axis_tvalid,
+    input wire m_axis_tready,
+    output reg [63:0] m_axis_tdata_owner_programID,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
-    // Output signal
-    output reg insertion_ready
+    // Performance monitoring
+    output reg [31:0] queue_occupancy
 );
 
-    // Pipeline state
-    reg waiting_for_acceptance;
-    reg [63:0] current_transaction_id;
-
-    // Insertion logic with pipeline feedback
+    // FSM states
+    localparam IDLE = 2'b00;
+    localparam PROCESS = 2'b01;
+    localparam OUTPUT = 2'b10;
+    reg [1:0] state;
+    
+    // Queue storage
+    reg [63:0] owner_programID_queue [0:INSERTION_QUEUE_DEPTH-1];
+    reg [MAX_DEPENDENCIES-1:0] read_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
+    reg [MAX_DEPENDENCIES-1:0] write_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
+    reg [3:0] queue_head;
+    reg [3:0] queue_tail;
+    reg queue_empty;
+    reg queue_full;
+    
+    // Track if current output transaction is from queue
+    reg current_from_queue;
+    
+    // Debug counter
+    reg [31:0] debug_cycles;
+    
+    // Queue management functions
+    wire [3:0] next_tail = (queue_tail == INSERTION_QUEUE_DEPTH-1) ? 4'd0 : queue_tail + 4'd1;
+    wire [3:0] next_head = (queue_head == INSERTION_QUEUE_DEPTH-1) ? 4'd0 : queue_head + 4'd1;
+    
+    // Main control logic
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            insertion_ready <= 1'b0;
-            waiting_for_acceptance <= 1'b0;
-            current_transaction_id <= 64'd0;
+            state <= IDLE;
+            s_axis_tready <= 1'b1;
+            m_axis_tvalid <= 1'b0;
+            m_axis_tdata_owner_programID <= 64'd0;
+            m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            
+            queue_head <= 4'd0;
+            queue_tail <= 4'd0;
+            queue_empty <= 1'b1;
+            queue_full <= 1'b0;
+            queue_occupancy <= 32'd0;
+            current_from_queue <= 1'b0;
+            debug_cycles <= 32'd0;
         end
         else begin
-            if (pipeline_ready) begin
-                waiting_for_acceptance <= 1'b0;
+            // Increment debug counter
+            debug_cycles <= debug_cycles + 1'b1;
+            
+            case (state)
+                IDLE: begin
+                    // Default: ready for input if queue not full
+                    s_axis_tready <= !queue_full;
+                    m_axis_tvalid <= 1'b0;
+                    
+                    if (!queue_empty) begin
+                        // Process from queue
+                        m_axis_tvalid <= 1'b1;
+                        m_axis_tdata_owner_programID <= owner_programID_queue[queue_head];
+                        m_axis_tdata_read_dependencies <= read_dependencies_queue[queue_head];
+                        m_axis_tdata_write_dependencies <= write_dependencies_queue[queue_head];
+                        current_from_queue <= 1'b1;
+                        state <= OUTPUT;
+                    end
+                    else if (s_axis_tvalid && !queue_full) begin
+                        // Directly forward if queue empty
+                        m_axis_tvalid <= 1'b1;
+                        m_axis_tdata_owner_programID <= s_axis_tdata_owner_programID;
+                        m_axis_tdata_read_dependencies <= s_axis_tdata_read_dependencies;
+                        m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
+                        current_from_queue <= 1'b0;
+                        state <= OUTPUT;
+                    end
+                end
                 
-                if (filter_ready && !waiting_for_acceptance) begin
-                    insertion_ready <= 1'b1;
-                    waiting_for_acceptance <= 1'b1;
-                    current_transaction_id <= owner_programID;
+                OUTPUT: begin
+                    // Keep trying to send current transaction
+                    m_axis_tvalid <= 1'b1;
+                    
+                    if (m_axis_tready) begin
+                        // Transaction accepted
+                        if (current_from_queue) begin
+                            // Update queue if current transaction was from queue
+                            queue_head <= next_head;
+                            queue_empty <= (next_head == queue_tail);
+                            queue_full <= 1'b0;
+                            queue_occupancy <= queue_occupancy - 1'b1;
+                        end
+                        state <= IDLE;
+                    end
+                    else begin
+                        // Under backpressure
+                        if (s_axis_tvalid && !queue_full) begin
+                            // Queue new transaction
+                            owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
+                            read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
+                            write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
+                            
+                            queue_tail <= next_tail;
+                            queue_empty <= 1'b0;
+                            queue_full <= (next_tail == queue_head);
+                            queue_occupancy <= queue_occupancy + 1'b1;
+                            
+                            // Only accept new transactions if queue isn't full
+                            s_axis_tready <= !(next_tail == queue_head);
+                        end else begin
+                            // Not accepting new transactions if queue full
+                            s_axis_tready <= !queue_full;
+                        end
+                    end
                 end
-                else begin
-                    insertion_ready <= 1'b0;
+                
+                default: begin
+                    state <= IDLE;
+                    s_axis_tready <= !queue_full;
                 end
-            end
-            else begin
-                // Hold current state while waiting
-                insertion_ready <= 1'b0;
+            endcase
+            
+            // Safety timeout - if stuck for too long, reset state
+            if (debug_cycles > 1000) begin
+                state <= IDLE;
+                s_axis_tready <= !queue_full;
+                m_axis_tvalid <= 1'b0;
+                debug_cycles <= 32'd0;
             end
         end
     end
