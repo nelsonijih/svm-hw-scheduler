@@ -11,7 +11,7 @@ svm-hw-scheduler/
 - sim/               # to place output from simulations
 - src                # Old source. Ignore this folder in this branch
 
-## Highlevel of how Firedancer Solana microblock/parallel execution scheduling works.
+## Firedancer Solana microblock/parallel execution scheduling.
 High-level idea: Accelerate conflict detection from the `fd_pack_schedule_impl` function in the diagram to an FPGA
 <img width="1130" alt="Screenshot 2025-03-20 at 2 15 18 PM" src="https://github.com/user-attachments/assets/d7fe4b58-d48d-4e95-a1c0-a7530cf7c2df" />
 
