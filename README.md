@@ -154,26 +154,26 @@ The design includes several performance counters:
 
 ## Future Improvements
 
-- [ ] **Performance Optimization**
-  - [ ] Implement parallel conflict detection for higher throughput
-  - [ ] Optimize batch size dynamically based on workload characteristics
-  - [ ] Reduce critical path latency in conflict checking logic
+ **Performance Optimization**
+  - Implement parallel conflict detection for higher throughput
+  - Optimize batch size dynamically based on workload characteristics
+  - Reduce critical path latency in conflict checking logic
 
-- [ ] **Architecture Enhancements**
-  - [ ] Add support for transaction priorities?
+- **Architecture Enhancements**
+  - Add support for transaction priorities?
 
-- [ ] **Memory Efficiency**
-  - [ ] Create a Tx read/write dependencies as a hashmap function that maps to an index of 1024 array(assuming no colossion) e.g 64-bit addr maps to just setting a single bit at a hashmap location. 
+- **Memory Efficiency**
+  - Create a Tx read/write dependencies as a hashmap function that maps to an index of 1024 array(assuming no colossion) e.g 64-bit addr maps to just setting a single bit at a hashmap location. 
    For examples. A tx has the the following
    read_dep = [addr1, adddr2, ...] ...transformed and inserted into batch_read_deps[hashmap(read_dep[addr1])] = 1, etc
    write_dep = [addr1, adddr2, ...]...transformed and inserted into batch_write_deps[hashmap(write_dep[addr1])] = 1, etc. FPGA computes and sends back
-  - [ ] Add bloom filter pre-screening to quickly reject obvious conflicts
-  - [ ] Optimize storage for batch transactions using BRAM,etc
+  - Add bloom filter pre-screening to quickly reject obvious conflicts
+  - Optimize storage for batch transactions using BRAM,etc
 
-- [ ] **Testbench Improvements**
-  - [ ] Add randomized transaction generator with configurable conflict rates
-  - [ ] Implement comprehensive coverage metrics for conflict scenarios
+-  **Testbench Improvements**
+  - Add randomized transaction generator with configurable conflict rates
+  - Implement comprehensive coverage metrics for conflict scenarios
 
-- [ ] **Integration Features**
-  - [ ] Add debug and telemetry interfaces for runtime monitoring
+- **Integration Features**
+  - Add debug and telemetry interfaces for runtime monitoring
 
