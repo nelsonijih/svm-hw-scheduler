@@ -10,6 +10,7 @@ BUILD_DIR = build
 
 # Source files
 VERILOG_SOURCES = $(RTL_DIR)/top.v \
+                  $(RTL_DIR)/conflict_detection.v \
                   $(RTL_DIR)/conflict_checker.v \
                   $(RTL_DIR)/insertion.v \
                   $(RTL_DIR)/batch.v

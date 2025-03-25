@@ -1,9 +1,6 @@
-////////////
-// Top-level module that instantiates all the stages pipeline and connect them together for the SVM Hardware Scheduler
-////////////
-
 module top #(
-    parameter MAX_DEPENDENCIES = 256, // Full dependency vector width
+    parameter NUM_PARALLEL_INSTANCES = 4,
+    parameter MAX_DEPENDENCIES = 256,
     parameter MAX_BATCH_SIZE = 8,
     parameter BATCH_TIMEOUT_CYCLES = 100,
     parameter MAX_PENDING_TRANSACTIONS = 16,
@@ -19,128 +16,123 @@ module top #(
     input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_read_dependencies,
     input wire [MAX_DEPENDENCIES-1:0] s_axis_tdata_write_dependencies,
     
-    // AXI-Stream output interface
-    output wire m_axis_tvalid,
-    input wire m_axis_tready,
-    output wire [63:0] m_axis_tdata_owner_programID,
-    output wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
-    output wire [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
+    // AXI-Stream output interface (one per instance)
+    output wire [NUM_PARALLEL_INSTANCES-1:0] m_axis_tvalid,
+    input wire [NUM_PARALLEL_INSTANCES-1:0] m_axis_tready,
+    output wire [NUM_PARALLEL_INSTANCES-1:0][63:0] m_axis_tdata_owner_programID,
+    output wire [NUM_PARALLEL_INSTANCES-1:0][MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
+    output wire [NUM_PARALLEL_INSTANCES-1:0][MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
-    // Performance monitoring
-    output wire [31:0] raw_conflicts,
-    output wire [31:0] waw_conflicts,
-    output wire [31:0] war_conflicts,
-    output wire [31:0] filter_hits,
-    output wire [31:0] queue_occupancy,
-    output wire [31:0] transactions_processed,  // From conflict checker - tracks total valid transactions
-    output wire [31:0] transactions_batched,   // From batch module - tracks transactions in completed batches
-    output wire batch_completed                // Indicates when a batch has completed
+    // Aggregated performance monitoring
+    output reg [31:0] total_raw_conflicts,
+    output reg [31:0] total_waw_conflicts,
+    output reg [31:0] total_war_conflicts,
+    output reg [31:0] total_filter_hits,
+    output reg [31:0] total_queue_occupancy,
+    output reg [31:0] total_transactions_processed,
+    output reg [31:0] total_transactions_batched,
+    output wire [NUM_PARALLEL_INSTANCES-1:0] batch_completed
 );
 
-    // Transaction accepted signal
-    wire transaction_accepted;
+    // Round-robin instance selection
+    reg [$clog2(NUM_PARALLEL_INSTANCES)-1:0] current_instance;
     
-    // Conflict checker to insertion connections
-    wire conflict_checker_to_insertion_tvalid;
-    wire conflict_checker_to_insertion_tready;
-    wire [63:0] conflict_checker_to_insertion_tdata_owner_programID;
-    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_read_dependencies;
-    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_write_dependencies;
-    // has_conflict signal removed as conflict_checker now only forwards non-conflicting transactions
+    // Per-instance signals
+    wire [NUM_PARALLEL_INSTANCES-1:0] instance_tready;
+    wire [31:0] instance_raw_conflicts [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_waw_conflicts [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_war_conflicts [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_filter_hits [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_queue_occupancy [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_transactions_processed [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_transactions_batched [NUM_PARALLEL_INSTANCES-1:0];
     
-    // Insertion to batch connections
-    wire insertion_to_batch_tvalid;
-    wire insertion_to_batch_tready;
-    wire [63:0] insertion_to_batch_tdata_owner_programID;
-    wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_read_dependencies;
-    wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_write_dependencies;
+    // Input demux signals
+    reg [NUM_PARALLEL_INSTANCES-1:0] instance_tvalid;
     
-    // Instantiate enhanced conflict checker with filtering
-    conflict_checker #(
-        .MAX_DEPENDENCIES(MAX_DEPENDENCIES)
-    ) conflict_checker_inst (
-        .clk(clk),
-        .rst_n(rst_n),
-        
-        // Input interface
-        .s_axis_tvalid(s_axis_tvalid),
-        .s_axis_tready(s_axis_tready),
-        .s_axis_tdata_owner_programID(s_axis_tdata_owner_programID),
-        .s_axis_tdata_read_dependencies(s_axis_tdata_read_dependencies),
-        .s_axis_tdata_write_dependencies(s_axis_tdata_write_dependencies),
-        
-        // Output interface
-        .m_axis_tvalid(conflict_checker_to_insertion_tvalid),
-        .m_axis_tready(conflict_checker_to_insertion_tready),
-        .m_axis_tdata_owner_programID(conflict_checker_to_insertion_tdata_owner_programID),
-        .m_axis_tdata_read_dependencies(conflict_checker_to_insertion_tdata_read_dependencies),
-        .m_axis_tdata_write_dependencies(conflict_checker_to_insertion_tdata_write_dependencies),
-        
-        // Batch control signals
-        .batch_completed(batch_completed),
-        
-        // Performance monitoring
-        .raw_conflicts(raw_conflicts),
-        .waw_conflicts(waw_conflicts),
-        .war_conflicts(war_conflicts),
-        .filter_hits(filter_hits),
-        .transactions_processed(transactions_processed)
-    );
+    // Round-robin instance selection logic
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            current_instance <= 0;
+        end else if (s_axis_tvalid && s_axis_tready) begin
+            // Move to next instance when transaction is accepted
+            current_instance <= current_instance + 1;
+            if (current_instance == NUM_PARALLEL_INSTANCES - 1)
+                current_instance <= 0;
+        end
+    end
     
-    // Instantiate insertion stage
-    insertion #(
-        .MAX_PENDING_TRANSACTIONS(MAX_PENDING_TRANSACTIONS),
-        .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH)
-    ) insertion_inst (
-        .clk(clk),
-        .rst_n(rst_n),
-        
-        // Input interface
-        .s_axis_tvalid(conflict_checker_to_insertion_tvalid),
-        .s_axis_tready(conflict_checker_to_insertion_tready),
-        .s_axis_tdata_owner_programID(conflict_checker_to_insertion_tdata_owner_programID),
-        .s_axis_tdata_read_dependencies(conflict_checker_to_insertion_tdata_read_dependencies),
-        .s_axis_tdata_write_dependencies(conflict_checker_to_insertion_tdata_write_dependencies),
-        
-        // Output interface
-        .m_axis_tvalid(insertion_to_batch_tvalid),
-        .m_axis_tready(insertion_to_batch_tready),
-        .m_axis_tdata_owner_programID(insertion_to_batch_tdata_owner_programID),
-        .m_axis_tdata_read_dependencies(insertion_to_batch_tdata_read_dependencies),
-        .m_axis_tdata_write_dependencies(insertion_to_batch_tdata_write_dependencies),
-        
-        // Performance monitoring
-        .queue_occupancy(queue_occupancy)
-    );
+    // Input demux logic
+    always @(*) begin
+        instance_tvalid = 0;
+        if (s_axis_tvalid)
+            instance_tvalid[current_instance] = 1'b1;
+    end
     
-    // Instantiate batch stage
-    batch #(
-        .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
-        .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES)
-    ) batch_inst (
-        .clk(clk),
-        .rst_n(rst_n),
+    // Connect input ready signal
+    assign s_axis_tready = instance_tready[current_instance];
+    
+    // Instantiate multiple conflict_detection modules
+    genvar i;
+    generate
+        for (i = 0; i < NUM_PARALLEL_INSTANCES; i = i + 1) begin : cd_inst
+            conflict_detection #(
+                .MAX_DEPENDENCIES(MAX_DEPENDENCIES),
+                .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
+                .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES),
+                .MAX_PENDING_TRANSACTIONS(MAX_PENDING_TRANSACTIONS),
+                .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH)
+            ) cd_inst (
+                .clk(clk),
+                .rst_n(rst_n),
+                
+                // Input interface
+                .s_axis_tvalid(instance_tvalid[i]),
+                .s_axis_tready(instance_tready[i]),
+                .s_axis_tdata_owner_programID(s_axis_tdata_owner_programID),
+                .s_axis_tdata_read_dependencies(s_axis_tdata_read_dependencies),
+                .s_axis_tdata_write_dependencies(s_axis_tdata_write_dependencies),
+                
+                // Output interface
+                .m_axis_tvalid(m_axis_tvalid[i]),
+                .m_axis_tready(m_axis_tready[i]),
+                .m_axis_tdata_owner_programID(m_axis_tdata_owner_programID[i]),
+                .m_axis_tdata_read_dependencies(m_axis_tdata_read_dependencies[i]),
+                .m_axis_tdata_write_dependencies(m_axis_tdata_write_dependencies[i]),
+                
+                // Performance monitoring
+                .raw_conflicts(instance_raw_conflicts[i]),
+                .waw_conflicts(instance_waw_conflicts[i]),
+                .war_conflicts(instance_war_conflicts[i]),
+                .filter_hits(instance_filter_hits[i]),
+                .queue_occupancy(instance_queue_occupancy[i]),
+                .transactions_processed(instance_transactions_processed[i]),
+                .transactions_batched(instance_transactions_batched[i]),
+                .batch_completed(batch_completed[i])
+            );
+        end
+    endgenerate
+    
+    // Aggregate performance counters
+    integer j;
+    always @(*) begin
+        total_raw_conflicts = 0;
+        total_waw_conflicts = 0;
+        total_war_conflicts = 0;
+        total_filter_hits = 0;
+        total_queue_occupancy = 0;
+        total_transactions_processed = 0;
+        total_transactions_batched = 0;
         
-        // Input interface
-        .s_axis_tvalid(insertion_to_batch_tvalid),
-        .s_axis_tready(insertion_to_batch_tready),
-        .s_axis_tdata_owner_programID(insertion_to_batch_tdata_owner_programID),
-        .s_axis_tdata_read_dependencies(insertion_to_batch_tdata_read_dependencies),
-        .s_axis_tdata_write_dependencies(insertion_to_batch_tdata_write_dependencies),
-        
-        // Output interface
-        .m_axis_tvalid(m_axis_tvalid),
-        .m_axis_tready(m_axis_tready),
-        .m_axis_tdata_owner_programID(m_axis_tdata_owner_programID),
-        .m_axis_tdata_read_dependencies(m_axis_tdata_read_dependencies),
-        .m_axis_tdata_write_dependencies(m_axis_tdata_write_dependencies),
-        
-        // Batch completion signal
-        .batch_completed(batch_completed),
-        
-        // Performance monitoring
-        .transactions_batched(transactions_batched),
-        .transaction_accepted(transaction_accepted)
-    );
+        for (j = 0; j < NUM_PARALLEL_INSTANCES; j = j + 1) begin
+            total_raw_conflicts = total_raw_conflicts + instance_raw_conflicts[j];
+            total_waw_conflicts = total_waw_conflicts + instance_waw_conflicts[j];
+            total_war_conflicts = total_war_conflicts + instance_war_conflicts[j];
+            total_filter_hits = total_filter_hits + instance_filter_hits[j];
+            total_queue_occupancy = total_queue_occupancy + instance_queue_occupancy[j];
+            total_transactions_processed = total_transactions_processed + instance_transactions_processed[j];
+            total_transactions_batched = total_transactions_batched + instance_transactions_batched[j];
+        end
+    end
 
 endmodule
