@@ -20,8 +20,8 @@ High-level idea: Accelerate conflict detection from the `fd_pack_schedule_impl` 
 - *`rtl/top.v`* -  Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
 - *`rtl/conflict_detection.v`* - An instance of all 3-stages of conflict detection wired together.
 - *`rtl/conflict_checker.v`* - Responsible for checking conflicts between transactions and the current batch
-- *`rtl/insertion.v`* - Responsible for signaling to the batch to accept transaction from the filter_engine
-- *`rtl/batch.v`* - Responsible for adding a deconflicted transaction from the filter engine into the batch. 
+- *`rtl/insertion.v`* - Responsible for signaling to the batch to accept transaction after tx passes conflict checker.
+- *`rtl/batch.v`* - Responsible for adding a deconflicted transaction from into the batch. 
 - *`tb/tb_svm_scheduler.v`* - Test cases with transactions that conflict and do not.
 
 ## Prerequisite
@@ -79,24 +79,6 @@ Blow is simulation sample output
    - `raw_conflicts`: Counter for RAW conflicts
    - `waw_conflicts`: Counter for WAW conflicts
    - `war_conflicts`: Counter for WAR conflicts
-
-
-## Performance Optimization
-
-### 1. Memory Access
-- Dual-port Block RAM usage
-- Prefetch buffer to hide latency
-- Full dependency vector processing
-
-### 2. Conflict Detection
-- Single-stage comprehensive conflict checking
-- Optimized for hardware efficiency
-- Detailed conflict type reporting
-
-### 3. Pipeline Efficiency
-- Prefetch buffer
-- Streamlined processing
-- AXI-Stream interface
 
 ## Testing
 
