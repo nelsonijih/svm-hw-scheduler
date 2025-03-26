@@ -1,15 +1,39 @@
 `timescale 1ns / 1ps
 
+`ifdef GATE_LEVEL_SIM
+`define GATE_LEVEL_SIM
+`endif
+
 module tb_svm_scheduler;
 
 // Parameters
 parameter DEBUG_ENABLE = 1;  // Enable debug output
 parameter NUM_TEST_CASES = 500;  // Number of test cases to generate
-parameter NUM_PARALLEL_INSTANCES = 4;  // Number of parallel conflict detection instances
-parameter NUM_PARALLEL_CHECKS = 4;   // Number of parallel conflict checkers per instance
-parameter CHUNK_SIZE = MAX_DEPENDENCIES/NUM_PARALLEL_CHECKS; // Size of each chunk for parallel processing
 parameter PATTERN_TYPES = 8;  // Different types of access patterns
 parameter STALL_DETECTION_THRESHOLD = 100; // Number of cycles to consider a stage stalled
+
+// Module parameters - these need special handling for gate-level simulation
+`ifdef GATE_LEVEL_SIM
+// In gate-level simulation, these parameters are already defined in the netlist
+localparam CHUNK_SIZE = 64;  // Size of each chunk for parallel processing
+localparam NUM_PARALLEL_INSTANCES = 4;  // Use fixed instance count for gate-level sim
+localparam MAX_DEPENDENCIES = 256;    // Dependency vector width for gate-level sim
+localparam MAX_BATCH_SIZE = 8;       // Maximum transactions per batch
+localparam BATCH_TIMEOUT_CYCLES = 100; // Cycles before timeout
+localparam MAX_PENDING_TRANSACTIONS = 16; // Max pending transactions
+localparam INSERTION_QUEUE_DEPTH = 8;   // Depth of insertion queue
+localparam MIN_BATCH_SIZE = 2;        // Minimum transactions before timeout
+`else
+// In RTL simulation, we define these parameters normally
+parameter NUM_PARALLEL_INSTANCES = 4;  // Number of parallel conflict detection instances
+parameter NUM_PARALLEL_CHECKS = 4;   // Number of parallel conflict checkers per instance
+parameter MAX_DEPENDENCIES = 256;    // Dependency vector width
+parameter MAX_BATCH_SIZE = 8;       // Maximum transactions per batch
+parameter BATCH_TIMEOUT_CYCLES = 100; // Cycles before timeout
+parameter MAX_PENDING_TRANSACTIONS = 16; // Max pending transactions
+parameter INSERTION_QUEUE_DEPTH = 8;   // Depth of insertion queue
+parameter CHUNK_SIZE = MAX_DEPENDENCIES/NUM_PARALLEL_CHECKS; // Size of each chunk for parallel processing
+`endif
 
 // Test pattern generation parameters
 reg [31:0] test_case_counter;
@@ -57,12 +81,11 @@ reg prev_batch_active;
 
 // Previous in-flight transaction count for stall detection
 reg [31:0] prev_transactions_in_flight;
-localparam MAX_DEPENDENCIES = 256;        // Full dependency vector width
-localparam MAX_BATCH_SIZE = 8;            // Maximum transactions per batch
+
+// These localparams should only be defined when not in gate-level simulation
+`ifndef GATE_LEVEL_SIM
 localparam MIN_BATCH_SIZE = 2;            // Minimum transactions before timeout
-localparam BATCH_TIMEOUT_CYCLES = 100;     // Cycles before forcing batch output
-localparam MAX_PENDING_TRANSACTIONS = 16;  // Maximum pending transactions
-localparam INSERTION_QUEUE_DEPTH = 8;      // Depth of insertion queue
+`endif
 
 // Clock and reset
 reg clk;
@@ -397,6 +420,11 @@ always @(posedge clk) begin
 end
 
 // DUT instantiation
+`ifdef GATE_LEVEL_SIM
+// For gate-level simulation, don't pass parameters - use those in the netlist
+top dut (
+`else
+// For RTL simulation, pass parameters normally
 top #(
     .NUM_PARALLEL_INSTANCES(NUM_PARALLEL_INSTANCES),
     .MAX_DEPENDENCIES(MAX_DEPENDENCIES),
@@ -405,6 +433,7 @@ top #(
     .MAX_PENDING_TRANSACTIONS(MAX_PENDING_TRANSACTIONS),
     .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH)
 ) dut (
+`endif
     .clk(clk),
     .rst_n(rst_n),
     
@@ -451,7 +480,11 @@ reg generate_transactions;
 // Test stimulus
 initial begin
     // Initialize VCD dump
+`ifdef GATE_LEVEL_SIM
+    $dumpfile("build/synth/synth_sim.vcd");
+`else
     $dumpfile("build/svm_scheduler.vcd");
+`endif
     $dumpvars(0, tb_svm_scheduler);
 
     // Initialize signals and test counters

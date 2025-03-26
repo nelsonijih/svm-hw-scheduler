@@ -2,11 +2,13 @@
 VERILOG = iverilog
 VVP = vvp
 GTKWAVE = gtkwave
+YOSYS = yosys
 
 # Directories
 RTL_DIR = rtl
 TB_DIR = tb
 BUILD_DIR = build
+SYNTH_DIR = $(BUILD_DIR)/synth
 
 # Source files
 VERILOG_SOURCES = $(RTL_DIR)/top.v \
@@ -19,9 +21,14 @@ TB_SOURCES = $(TB_DIR)/tb_svm_scheduler.v
 # Output files
 VVP_FILE = $(BUILD_DIR)/svm_scheduler.vvp
 VCD_FILE = $(BUILD_DIR)/svm_scheduler.vcd
+NETLIST_FILE = $(SYNTH_DIR)/netlist.v
+SYNTH_LOG = $(SYNTH_DIR)/synthesis.log
+SYNTH_SIM_VVP = $(SYNTH_DIR)/synth_sim.vvp
+SYNTH_SIM_VCD = $(SYNTH_DIR)/synth_sim.vcd
 
 # Create build directory if it doesn't exist
 $(shell mkdir -p $(BUILD_DIR))
+$(shell mkdir -p $(SYNTH_DIR))
 
 # Default target
 all: sim
@@ -46,6 +53,31 @@ wave: $(VCD_FILE)
 
 # Clean build artifacts
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(SYNTH_DIR)
 
-.PHONY: all clean sim wave
+# Create synthesis directory
+$(SYNTH_DIR):
+	mkdir -p $(SYNTH_DIR)
+
+# Synthesis with Yosys
+$(NETLIST_FILE): $(VERILOG_SOURCES) | $(SYNTH_DIR)
+	$(YOSYS) -QT -l $(SYNTH_LOG) -p "read_verilog -sv $^; hierarchy -check -top top; proc; opt; fsm; opt; memory; opt; techmap -map rtl/cells.v; opt; write_verilog -simple-lhs -noattr -nohex $(NETLIST_FILE);"
+
+# Synthesis target
+synth: $(NETLIST_FILE)
+
+# Post-synthesis simulation
+$(SYNTH_SIM_VVP): $(NETLIST_FILE) $(TB_SOURCES) rtl/cells.v | $(BUILD_DIR)
+	$(VERILOG) -g2012 -DGATE_LEVEL_SIM -I$(SYNTH_DIR) -o $@ rtl/cells.v $(NETLIST_FILE) $(TB_SOURCES)
+
+$(SYNTH_SIM_VCD): $(SYNTH_SIM_VVP)
+	$(VVP) $<
+
+# Run post-synthesis simulation
+synth_sim: $(SYNTH_SIM_VCD)
+
+# View post-synthesis waveforms
+synth_wave: $(SYNTH_SIM_VCD)
+	$(GTKWAVE) $<
+
+.PHONY: all clean sim wave synth synth_sim synth_wave
