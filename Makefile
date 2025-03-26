@@ -21,10 +21,13 @@ TB_SOURCES = $(TB_DIR)/tb_svm_scheduler.v
 # Output files
 VVP_FILE = $(BUILD_DIR)/svm_scheduler.vvp
 VCD_FILE = $(BUILD_DIR)/svm_scheduler.vcd
+FUNCTIONAL_LOG = $(BUILD_DIR)/functional_sim.log
+
 NETLIST_FILE = $(SYNTH_DIR)/netlist.v
 SYNTH_LOG = $(SYNTH_DIR)/synthesis.log
 SYNTH_SIM_VVP = $(SYNTH_DIR)/synth_sim.vvp
 SYNTH_SIM_VCD = $(SYNTH_DIR)/synth_sim.vcd
+SYNTH_SIM_LOG = $(SYNTH_DIR)/synthesis_sim.log
 
 # Create build directory if it doesn't exist
 $(shell mkdir -p $(BUILD_DIR))
@@ -42,7 +45,7 @@ $(VVP_FILE): $(VERILOG_SOURCES) $(TB_SOURCES) | $(BUILD_DIR)
 
 # Run simulation to generate VCD file
 $(VCD_FILE): $(VVP_FILE)
-	$(VVP) $<
+	$(VVP) $< | tee $(FUNCTIONAL_LOG)
 
 # Simulation target
 sim: $(VCD_FILE)
@@ -71,7 +74,7 @@ $(SYNTH_SIM_VVP): $(NETLIST_FILE) $(TB_SOURCES) rtl/cells.v | $(BUILD_DIR)
 	$(VERILOG) -g2012 -DGATE_LEVEL_SIM -I$(SYNTH_DIR) -o $@ rtl/cells.v $(NETLIST_FILE) $(TB_SOURCES)
 
 $(SYNTH_SIM_VCD): $(SYNTH_SIM_VVP)
-	$(VVP) $<
+	$(VVP) $< | tee $(SYNTH_SIM_LOG)
 
 # Run post-synthesis simulation
 synth_sim: $(SYNTH_SIM_VCD)
