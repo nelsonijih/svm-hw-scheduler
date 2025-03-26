@@ -10,12 +10,15 @@ BUILD_DIR = build
 
 # Source files
 VERILOG_SOURCES = $(RTL_DIR)/top.v \
+                  $(RTL_DIR)/conflict_detection.v \
                   $(RTL_DIR)/conflict_checker.v \
                   $(RTL_DIR)/insertion.v \
                   $(RTL_DIR)/batch.v
 TB_SOURCES = $(TB_DIR)/tb_svm_scheduler.v
-TB_SIMPLIFIED = $(TB_DIR)/tb_simplified.v
-TB_PERFORMANCE = $(TB_DIR)/tb_performance_comparison.v
+
+# Output files
+VVP_FILE = $(BUILD_DIR)/svm_scheduler.vvp
+VCD_FILE = $(BUILD_DIR)/svm_scheduler.vcd
 
 # Create build directory if it doesn't exist
 $(shell mkdir -p $(BUILD_DIR))
@@ -26,35 +29,23 @@ all: sim
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/svm_scheduler.vvp: $(VERILOG_SOURCES) $(TB_SOURCES) | $(BUILD_DIR)
-	$(VERILOG) -g2012 \
-		-o $@ $(VERILOG_SOURCES) $(TB_SOURCES)
+# Compile Verilog sources
+$(VVP_FILE): $(VERILOG_SOURCES) $(TB_SOURCES) | $(BUILD_DIR)
+	$(VERILOG) -g2012 -o $@ $^
 
-$(BUILD_DIR)/simplified.vvp: $(VERILOG_SOURCES) $(TB_SIMPLIFIED) | $(BUILD_DIR)
-	$(VERILOG) -g2012 \
-		-o $@ $(VERILOG_SOURCES) $(TB_SIMPLIFIED)
-
-$(BUILD_DIR)/performance.vvp: $(VERILOG_SOURCES) $(TB_PERFORMANCE) | $(BUILD_DIR)
-	$(VERILOG) -g2012 \
-		-o $@ $(VERILOG_SOURCES) $(TB_PERFORMANCE)
-
-sim: $(BUILD_DIR)/svm_scheduler.vvp
+# Run simulation to generate VCD file
+$(VCD_FILE): $(VVP_FILE)
 	$(VVP) $<
 
-simplified: $(BUILD_DIR)/simplified.vvp
-	$(VVP) $<
+# Simulation target
+sim: $(VCD_FILE)
 
-performance: $(BUILD_DIR)/performance.vvp
-	$(VVP) $<
-
-wave: sim
-	$(GTKWAVE) $(BUILD_DIR)/svm_scheduler.vcd
-
-wave-simplified: simplified
-	$(GTKWAVE) $(BUILD_DIR)/simplified.vcd
+# View waveforms
+wave: $(VCD_FILE)
+	$(GTKWAVE) $<
 
 # Clean build artifacts
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean sim wave simplified wave-simplified performance
+.PHONY: all clean sim wave

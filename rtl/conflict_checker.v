@@ -30,7 +30,9 @@ module conflict_checker #(
     output reg [31:0] waw_conflicts,
     output reg [31:0] war_conflicts,
     output reg [31:0] filter_hits,
-    output reg [31:0] transactions_processed
+    output reg [31:0] transactions_processed,
+    output reg [31:0] transactions_in_queue,
+    output reg [31:0] transactions_in_batch
 );
 
 // Batch dependency tracking
@@ -53,10 +55,16 @@ reg [MAX_DEPENDENCIES-1:0] read_deps_pipe;
 reg [MAX_DEPENDENCIES-1:0] write_deps_pipe;
 reg transaction_valid_pipe;  // Track if transaction is valid in pipeline
 
-// Conflict detection signals
+// Conflict detection signals for batch dependencies
 wire [NUM_PARALLEL_CHECKS-1:0] raw_conflict;
 wire [NUM_PARALLEL_CHECKS-1:0] waw_conflict;
 wire [NUM_PARALLEL_CHECKS-1:0] war_conflict;
+
+// Aggregated conflict signals
+wire has_raw_batch_conflict;
+wire has_waw_batch_conflict;
+wire has_war_batch_conflict;
+wire has_any_batch_conflict;
 
 // Direct conflict detection signals
 reg has_raw_conflict;
@@ -146,6 +154,12 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// Batch conflict detection
+assign has_raw_batch_conflict = |raw_conflict;
+assign has_waw_batch_conflict = |waw_conflict;
+assign has_war_batch_conflict = |war_conflict;
+assign has_any_batch_conflict = has_raw_batch_conflict || has_waw_batch_conflict || has_war_batch_conflict;
+
 // Debug initialization
 initial begin
     if (DEBUG_ENABLE)
@@ -173,40 +187,42 @@ always @(posedge clk or negedge rst_n) begin
             end
             
             CHECK: begin
-                // Check for conflicts with previous transaction
-                if (prev_transaction_valid) begin
-                    // RAW: Check if current read conflicts with previous write
-                    if (|(read_deps_pipe & prev_write_deps)) begin
+                // Check for conflicts with batch dependencies
+                if (transaction_valid_pipe) begin
+                    // Always increment transactions_processed when we check a transaction
+                    transactions_processed <= transactions_processed + 1;
+                    if (DEBUG_ENABLE)
+                        $display("Time %0t: Incrementing transactions_processed to %0d", $time, transactions_processed + 1);
+                    
+                    if (has_raw_batch_conflict) begin
                         raw_conflicts <= raw_conflicts + 1;
                         has_raw_conflict <= 1'b1;
                         if (DEBUG_ENABLE)
                             $display("Time %0t: RAW conflict detected for transaction %h", $time, owner_pipe);
                     end
-                    
-                    // WAW: Check if current write conflicts with previous write
-                    if (|(write_deps_pipe & prev_write_deps)) begin
+                    if (has_waw_batch_conflict) begin
                         waw_conflicts <= waw_conflicts + 1;
                         has_waw_conflict <= 1'b1;
                         if (DEBUG_ENABLE)
                             $display("Time %0t: WAW conflict detected for transaction %h", $time, owner_pipe);
                     end
-                    
-                    // WAR: Check if current write conflicts with previous read
-                    if (|(write_deps_pipe & prev_read_deps)) begin
+                    if (has_war_batch_conflict) begin
                         war_conflicts <= war_conflicts + 1;
                         has_war_conflict <= 1'b1;
                         if (DEBUG_ENABLE)
                             $display("Time %0t: WAR conflict detected for transaction %h", $time, owner_pipe);
                     end
+                    
+                    // Update filter hits if any conflict found
+                    if (has_any_batch_conflict) begin
+                        filter_hits <= filter_hits + 1;
+                        if (DEBUG_ENABLE)
+                            $display("Time %0t: Transaction filtered due to conflicts", $time);
+                    end
                 end
-                
-                // Increment filter_hits if any conflict found
-                if (has_raw_conflict || has_waw_conflict || has_war_conflict) begin
-                    filter_hits <= filter_hits + 32'd1;
-                    if (DEBUG_ENABLE)
-                        $display("Time %0t: Transaction %h has conflicts (RAW=%b WAW=%b WAR=%b)", 
-                                 $time, owner_pipe, has_raw_conflict, has_waw_conflict, has_war_conflict);
-                end
+
+                // Set transaction conflict status
+                transaction_has_conflict = has_raw_conflict || has_waw_conflict || has_war_conflict;
                 
                 // Proceed to OUTPUT or COMPLETE based on conflict status
                 if (!transaction_has_conflict) begin
@@ -215,17 +231,6 @@ always @(posedge clk or negedge rst_n) begin
                         $display("Time %0t: Transaction ID %h accepted - no conflicts", $time, owner_pipe);
                 end else begin
                     state <= COMPLETE;
-                    
-                    if (DEBUG_ENABLE) begin
-                        $display("Time %0t: Transaction ID %h REJECTED due to conflicts (RAW=%b WAW=%b WAR=%b)", 
-                                 $time, owner_pipe, has_raw_conflict, has_waw_conflict, has_war_conflict);
-                        $display("  Current conflict counts - RAW: %0d, WAW: %0d, WAR: %0d, Total: %0d",
-                                 raw_conflicts + (has_raw_conflict ? 32'd1 : 32'd0),
-                                 waw_conflicts + (has_waw_conflict ? 32'd1 : 32'd0),
-                                 war_conflicts + (has_war_conflict ? 32'd1 : 32'd0),
-                                 filter_hits + 32'd1);
-                    end
-                    
                     if (DEBUG_ENABLE) begin
                         $display("Time %0t: Transaction ID %h REJECTED due to conflicts (RAW=%b WAW=%b WAR=%b)", 
                                  $time, owner_pipe, has_raw_conflict, has_waw_conflict, has_war_conflict);
@@ -245,6 +250,9 @@ always @(posedge clk or negedge rst_n) begin
                     state <= COMPLETE;
                     transaction_completed <= 1;
                     transaction_in_progress <= 0;
+                    
+                    if (DEBUG_ENABLE)
+                        $display("Time %0t: Transaction completed with handshake, moving to COMPLETE state", $time);
                     
                     // Store dependencies for next conflict check
                     prev_read_deps <= read_deps_pipe;

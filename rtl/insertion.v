@@ -1,7 +1,7 @@
 module insertion #(
     parameter MAX_DEPENDENCIES = 256,
     parameter MAX_PENDING_TRANSACTIONS = 16,
-    parameter INSERTION_QUEUE_DEPTH = 8
+    parameter INSERTION_QUEUE_DEPTH = 32  // Increased queue depth
 ) (
     input wire clk,
     input wire rst_n,
@@ -21,33 +21,35 @@ module insertion #(
     output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
     // Performance monitoring
-    output reg [31:0] queue_occupancy
+    output reg [31:0] queue_occupancy,
+    output reg [31:0] transactions_in_queue
 );
 
     // FSM states
     localparam IDLE = 2'b00;
-    localparam PROCESS = 2'b01;
-    localparam OUTPUT = 2'b10;
+    localparam OUTPUT = 2'b01;
+    localparam WAIT_ACCEPT = 2'b10;
     reg [1:0] state;
     
     // Queue storage
     reg [63:0] owner_programID_queue [0:INSERTION_QUEUE_DEPTH-1];
     reg [MAX_DEPENDENCIES-1:0] read_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
     reg [MAX_DEPENDENCIES-1:0] write_dependencies_queue [0:INSERTION_QUEUE_DEPTH-1];
-    reg [3:0] queue_head;
-    reg [3:0] queue_tail;
+    reg [5:0] queue_head;  // Increased to 6 bits for larger queue
+    reg [5:0] queue_tail;  // Increased to 6 bits for larger queue
     reg queue_empty;
     reg queue_full;
     
     // Track if current output transaction is from queue
     reg current_from_queue;
     
-    // Debug counter
+    // Debug counter and transaction tracking
     reg [31:0] debug_cycles;
+    reg [31:0] transactions_in_flight;
     
     // Queue management functions
-    wire [3:0] next_tail = (queue_tail == INSERTION_QUEUE_DEPTH-1) ? 4'd0 : queue_tail + 4'd1;
-    wire [3:0] next_head = (queue_head == INSERTION_QUEUE_DEPTH-1) ? 4'd0 : queue_head + 4'd1;
+    wire [5:0] next_tail = (queue_tail == INSERTION_QUEUE_DEPTH-1) ? 6'd0 : queue_tail + 6'd1;
+    wire [5:0] next_head = (queue_head == INSERTION_QUEUE_DEPTH-1) ? 6'd0 : queue_head + 6'd1;
     
     // Main control logic
     always @(posedge clk or negedge rst_n) begin
@@ -59,13 +61,15 @@ module insertion #(
             m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             
-            queue_head <= 4'd0;
-            queue_tail <= 4'd0;
+            queue_head <= 6'd0;
+            queue_tail <= 6'd0;
             queue_empty <= 1'b1;
             queue_full <= 1'b0;
             queue_occupancy <= 32'd0;
             current_from_queue <= 1'b0;
             debug_cycles <= 32'd0;
+            transactions_in_flight <= 32'd0;
+            transactions_in_queue <= 32'd0;
         end
         else begin
             // Increment debug counter
@@ -85,6 +89,7 @@ module insertion #(
                         m_axis_tdata_write_dependencies <= write_dependencies_queue[queue_head];
                         current_from_queue <= 1'b1;
                         state <= OUTPUT;
+                        transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                     else if (s_axis_tvalid && !queue_full) begin
                         // Directly forward if queue empty
@@ -94,15 +99,16 @@ module insertion #(
                         m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
                         current_from_queue <= 1'b0;
                         state <= OUTPUT;
+                        transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                 end
                 
                 OUTPUT: begin
-                    // Keep trying to send current transaction
+                    // Hold current transaction until accepted
                     m_axis_tvalid <= 1'b1;
+                    s_axis_tready <= 1'b0; // Don't accept new transactions while outputting
                     
                     if (m_axis_tready) begin
-                        // Transaction accepted
                         if (current_from_queue) begin
                             // Update queue if current transaction was from queue
                             queue_head <= next_head;
@@ -110,28 +116,30 @@ module insertion #(
                             queue_full <= 1'b0;
                             queue_occupancy <= queue_occupancy - 1'b1;
                         end
-                        state <= IDLE;
+                        
+                        transactions_in_queue <= transactions_in_queue - 1'b1;
+                        state <= WAIT_ACCEPT;
                     end
-                    else begin
-                        // Under backpressure
-                        if (s_axis_tvalid && !queue_full) begin
-                            // Queue new transaction
-                            owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
-                            read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
-                            write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
-                            
-                            queue_tail <= next_tail;
-                            queue_empty <= 1'b0;
-                            queue_full <= (next_tail == queue_head);
-                            queue_occupancy <= queue_occupancy + 1'b1;
-                            
-                            // Only accept new transactions if queue isn't full
-                            s_axis_tready <= !(next_tail == queue_head);
-                        end else begin
-                            // Not accepting new transactions if queue full
-                            s_axis_tready <= !queue_full;
-                        end
+                end
+                
+                WAIT_ACCEPT: begin
+                    // Clear valid and prepare for next transaction
+                    m_axis_tvalid <= 1'b0;
+                    s_axis_tready <= !queue_full;
+                    
+                    if (s_axis_tvalid && !queue_full) begin
+                        // Queue new transaction
+                        owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
+                        read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
+                        write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
+                        
+                        queue_tail <= next_tail;
+                        queue_empty <= 1'b0;
+                        queue_full <= (next_tail == queue_head);
+                        queue_occupancy <= queue_occupancy + 1'b1;
                     end
+                    
+                    state <= IDLE;
                 end
                 
                 default: begin
@@ -141,11 +149,12 @@ module insertion #(
             endcase
             
             // Safety timeout - if stuck for too long, reset state
-            if (debug_cycles > 1000) begin
+            if (debug_cycles > 5000) begin  // Increased timeout
                 state <= IDLE;
                 s_axis_tready <= !queue_full;
                 m_axis_tvalid <= 1'b0;
                 debug_cycles <= 32'd0;
+                transactions_in_flight <= queue_occupancy; // Reset to match queue
             end
         end
     end
