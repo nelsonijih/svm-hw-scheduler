@@ -450,6 +450,10 @@ reg generate_transactions;
 
 // Test stimulus
 initial begin
+    // Initialize VCD dump
+    $dumpfile("build/svm_scheduler.vcd");
+    $dumpvars(0, tb_svm_scheduler);
+
     // Initialize signals and test counters
     rst_n = 0;
     s_axis_tdata_owner_programID = 0;
