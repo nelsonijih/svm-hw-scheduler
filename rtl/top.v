@@ -31,6 +31,10 @@ module top #(
     output reg [31:0] total_queue_occupancy,
     output reg [31:0] total_transactions_processed,
     output reg [31:0] total_transactions_batched,
+    output reg [31:0] total_batch_stall_count,
+    output reg [31:0] total_current_batch_size,
+    output reg [31:0] total_transactions_in_queue,
+    output reg [31:0] total_transactions_in_batch,
     output wire [NUM_PARALLEL_INSTANCES-1:0] batch_completed
 );
 
@@ -46,6 +50,10 @@ module top #(
     wire [31:0] instance_queue_occupancy [NUM_PARALLEL_INSTANCES-1:0];
     wire [31:0] instance_transactions_processed [NUM_PARALLEL_INSTANCES-1:0];
     wire [31:0] instance_transactions_batched [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_batch_stall_count [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_current_batch_size [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_transactions_in_queue [NUM_PARALLEL_INSTANCES-1:0];
+    wire [31:0] instance_transactions_in_batch [NUM_PARALLEL_INSTANCES-1:0];
     
     // Input demux signals
     reg [NUM_PARALLEL_INSTANCES-1:0] instance_tvalid;
@@ -108,6 +116,10 @@ module top #(
                 .queue_occupancy(instance_queue_occupancy[i]),
                 .transactions_processed(instance_transactions_processed[i]),
                 .transactions_batched(instance_transactions_batched[i]),
+                .batch_stall_count(instance_batch_stall_count[i]),
+                .current_batch_size(instance_current_batch_size[i]),
+                .transactions_in_queue(instance_transactions_in_queue[i]),
+                .transactions_in_batch(instance_transactions_in_batch[i]),
                 .batch_completed(batch_completed[i])
             );
         end
@@ -123,6 +135,8 @@ module top #(
         total_queue_occupancy = 0;
         total_transactions_processed = 0;
         total_transactions_batched = 0;
+        total_batch_stall_count = 0;
+        total_current_batch_size = 0;
         
         for (j = 0; j < NUM_PARALLEL_INSTANCES; j = j + 1) begin
             total_raw_conflicts = total_raw_conflicts + instance_raw_conflicts[j];
@@ -132,6 +146,10 @@ module top #(
             total_queue_occupancy = total_queue_occupancy + instance_queue_occupancy[j];
             total_transactions_processed = total_transactions_processed + instance_transactions_processed[j];
             total_transactions_batched = total_transactions_batched + instance_transactions_batched[j];
+            total_batch_stall_count = total_batch_stall_count + instance_batch_stall_count[j];
+            total_current_batch_size = total_current_batch_size + instance_current_batch_size[j];
+            total_transactions_in_queue = total_transactions_in_queue + instance_transactions_in_queue[j];
+            total_transactions_in_batch = total_transactions_in_batch + instance_transactions_in_batch[j];
         end
     end
 

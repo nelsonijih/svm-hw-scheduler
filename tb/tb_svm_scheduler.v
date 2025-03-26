@@ -9,6 +9,7 @@ parameter NUM_PARALLEL_INSTANCES = 4;  // Number of parallel conflict detection 
 parameter NUM_PARALLEL_CHECKS = 4;   // Number of parallel conflict checkers per instance
 parameter CHUNK_SIZE = MAX_DEPENDENCIES/NUM_PARALLEL_CHECKS; // Size of each chunk for parallel processing
 parameter PATTERN_TYPES = 8;  // Different types of access patterns
+parameter STALL_DETECTION_THRESHOLD = 100; // Number of cycles to consider a stage stalled
 
 // Test pattern generation parameters
 reg [31:0] test_case_counter;
@@ -32,6 +33,30 @@ reg has_war;
 reg [31:0] prev_raw_conflicts;
 reg [31:0] prev_waw_conflicts;
 reg [31:0] prev_war_conflicts;
+
+// Enhanced pipeline monitoring
+reg [31:0] transactions_entering_conflict_checker;
+reg [31:0] transactions_exiting_conflict_checker;
+reg [31:0] transactions_entering_insertion;
+reg [31:0] transactions_exiting_insertion;
+reg [31:0] transactions_entering_batch;
+reg [31:0] transactions_exiting_batch;
+
+// Stall detection counters
+reg [31:0] conflict_checker_stall_cycles;
+reg [31:0] insertion_stall_cycles;
+reg [31:0] batch_stall_cycles;
+reg conflict_checker_stalled;
+reg insertion_stalled;
+reg batch_stalled;
+
+// Previous cycle activity flags for stall detection
+reg prev_conflict_checker_active;
+reg prev_insertion_active;
+reg prev_batch_active;
+
+// Previous in-flight transaction count for stall detection
+reg [31:0] prev_transactions_in_flight;
 localparam MAX_DEPENDENCIES = 256;        // Full dependency vector width
 localparam MAX_BATCH_SIZE = 8;            // Maximum transactions per batch
 localparam MIN_BATCH_SIZE = 2;            // Minimum transactions before timeout
@@ -65,6 +90,8 @@ wire [31:0] total_filter_hits;
 wire [31:0] total_queue_occupancy;
 wire [31:0] total_transactions_processed;
 wire [31:0] total_transactions_batched;
+wire [31:0] total_batch_stall_count;
+wire [31:0] total_current_batch_size;
 reg [31:0] total_transactions_completed;
 wire [NUM_PARALLEL_INSTANCES-1:0] batch_completed;
 
@@ -107,7 +134,12 @@ real max_batch_formation_time;
 real simulation_time_ns;
 real transactions_per_cycle;
 real transactions_per_second;
-real throughput_gbps;  // Based on 64-bit transactions
+real throughput_gbps;
+
+// Pipeline stage monitoring
+reg [31:0] transactions_in_conflict_checker;
+reg [31:0] transactions_in_insertion;
+reg [31:0] transactions_in_batch;  // Based on 64-bit transactions
 
 // Monitor transaction submission and completion
 always @(posedge clk) begin
@@ -137,6 +169,31 @@ always @(posedge clk) begin
         prev_raw_conflicts <= 0;
         prev_waw_conflicts <= 0;
         prev_war_conflicts <= 0;
+        
+        // Reset pipeline stage counters
+        transactions_in_conflict_checker <= 0;
+        transactions_in_insertion <= 0;
+        transactions_in_batch <= 0;
+        
+        // Reset enhanced pipeline monitoring
+        transactions_entering_conflict_checker <= 0;
+        transactions_exiting_conflict_checker <= 0;
+        transactions_entering_insertion <= 0;
+        transactions_exiting_insertion <= 0;
+        transactions_entering_batch <= 0;
+        transactions_exiting_batch <= 0;
+        
+        // Reset stall detection
+        conflict_checker_stall_cycles <= 0;
+        insertion_stall_cycles <= 0;
+        batch_stall_cycles <= 0;
+        conflict_checker_stalled <= 0;
+        insertion_stalled <= 0;
+        batch_stalled <= 0;
+        prev_conflict_checker_active <= 0;
+        prev_insertion_active <= 0;
+        prev_batch_active <= 0;
+        prev_transactions_in_flight <= 0;
     end else begin
         // Count submitted transactions and record submission time
         if (s_axis_tvalid) begin
@@ -144,11 +201,83 @@ always @(posedge clk) begin
                 total_transactions_submitted <= total_transactions_submitted + 1;
                 transaction_submit_time[total_transactions_submitted] <= $time;
                 transactions_in_flight <= transactions_in_flight + 1;
+                // Transaction entering conflict checker
+                transactions_entering_conflict_checker <= transactions_entering_conflict_checker + 1;
             end else begin
                 // Transaction was dropped due to backpressure
                 transactions_dropped <= transactions_dropped + 1;
             end
         end
+        
+        // Track transactions moving between pipeline stages using external signals
+        // We can only track transactions entering and exiting the entire pipeline
+        
+        // When a transaction is submitted to the pipeline
+        if (s_axis_tvalid && s_axis_tready) begin
+            transactions_entering_conflict_checker <= transactions_entering_conflict_checker + 1;
+        end
+        
+        // When a transaction completes (exits the pipeline)
+        if (m_axis_tvalid && m_axis_tready) begin
+            transactions_exiting_batch <= transactions_exiting_batch + 1;
+        end
+        
+        // Track when transactions are conflicted (filtered)
+        if (total_filter_hits > total_transactions_conflicted) begin
+            // A new conflict was detected - this transaction exited the conflict checker
+            // but didn't proceed to insertion
+            transactions_exiting_conflict_checker <= transactions_exiting_conflict_checker + 1;
+        end
+        
+        // Infer transactions between stages based on known metrics
+        // These are approximations since we don't have direct access to internal signals
+        
+        // Estimate transactions entering insertion stage (non-conflicting transactions)
+        transactions_entering_insertion <= transactions_exiting_conflict_checker - total_filter_hits;
+        
+        // Estimate transactions exiting insertion stage (entering batch)
+        // This is based on the number of transactions batched
+        transactions_exiting_insertion <= total_transactions_batched;
+        transactions_entering_batch <= total_transactions_batched;
+        
+        // Stall detection logic based on external signals
+        // We can detect stalls by monitoring backpressure at the input
+        if (s_axis_tvalid && !s_axis_tready) begin
+            // Input backpressure detected - likely due to conflict checker stall
+            conflict_checker_stall_cycles <= conflict_checker_stall_cycles + 1;
+            if (conflict_checker_stall_cycles >= STALL_DETECTION_THRESHOLD && !conflict_checker_stalled) begin
+                conflict_checker_stalled <= 1;
+                $display("WARNING: Input backpressure detected for %0d cycles at time %0t", 
+                         conflict_checker_stall_cycles, $time);
+            end
+        end else begin
+            // Reset stall counter if no backpressure
+            conflict_checker_stall_cycles <= 0;
+            conflict_checker_stalled <= 0;
+        end
+        
+        // For insertion and batch stalls, we can only infer from the overall pipeline behavior
+        // If transactions are entering but not completing, we have an internal stall
+        if (transactions_in_flight > 0 && transactions_in_flight > prev_transactions_in_flight) begin
+            // Transactions are accumulating in the pipeline
+            insertion_stall_cycles <= insertion_stall_cycles + 1;
+            batch_stall_cycles <= batch_stall_cycles + 1;
+            
+            if (insertion_stall_cycles >= STALL_DETECTION_THRESHOLD && !insertion_stalled) begin
+                insertion_stalled <= 1;
+                $display("WARNING: Transactions accumulating in pipeline for %0d cycles at time %0t", 
+                         insertion_stall_cycles, $time);
+            end
+        end else begin
+            // Reset stall counters if no accumulation
+            insertion_stall_cycles <= 0;
+            insertion_stalled <= 0;
+            batch_stall_cycles <= 0;
+            batch_stalled <= 0;
+        end
+        
+        // Update previous in-flight count for next cycle comparison
+        prev_transactions_in_flight <= transactions_in_flight;
         
         // Update in-flight count when transactions complete or conflict
         if (m_axis_tvalid && m_axis_tready) begin
@@ -158,9 +287,31 @@ always @(posedge clk) begin
             // New conflict detected
             transactions_in_flight <= transactions_in_flight - 1;
         end
-            
+        
+        // Track transactions at each pipeline stage
+        // Calculate the total number of transactions that have been processed by the system
+        // This includes completed, conflicted, and those still in the pipeline
+        
+        // Get accurate counts from module instances
+        transactions_in_insertion = dut.total_transactions_in_queue;
+        transactions_in_batch = dut.total_transactions_in_batch;
+        
+        // Calculate conflict checker transactions
+        transactions_in_conflict_checker = total_transactions_submitted - 
+                                         (transactions_completed + total_transactions_conflicted + 
+                                          transactions_in_insertion + transactions_in_batch);
+        
+        // Update total in-flight count
+        transactions_in_flight = transactions_in_conflict_checker + 
+                               transactions_in_insertion + 
+                               transactions_in_batch;
+        
+        // Handle negative case (shouldn't happen but prevents underflow)
+        if (transactions_in_conflict_checker < 0) begin
+            transactions_in_conflict_checker = 0;
+        end
         // Track conflict statistics from DUT
-        total_transactions_conflicted <= total_filter_hits;
+        total_transactions_conflicted = total_filter_hits;
         raw_conflicts <= total_raw_conflicts;
         waw_conflicts <= total_waw_conflicts;
         war_conflicts <= total_war_conflicts;
@@ -279,6 +430,8 @@ top #(
     .total_queue_occupancy(total_queue_occupancy),
     .total_transactions_processed(total_transactions_processed),
     .total_transactions_batched(total_transactions_batched),
+    .total_batch_stall_count(total_batch_stall_count),
+    .total_current_batch_size(total_current_batch_size),
     .batch_completed(batch_completed)
 );
 
@@ -292,7 +445,10 @@ initial begin
     end
 end
 
-    // Test stimulus
+    // Control flag for transaction generation
+reg generate_transactions;
+
+// Test stimulus
 initial begin
     // Initialize signals and test counters
     rst_n = 0;
@@ -302,6 +458,7 @@ initial begin
     pattern_type = 0;
     s_axis_tdata_write_dependencies = 0;
     s_axis_tvalid = 0;
+    generate_transactions = 1; // Start with transaction generation enabled
     
     // Set all instance outputs ready
     for (integer i = 0; i < NUM_PARALLEL_INSTANCES; i = i + 1)
@@ -316,7 +473,7 @@ initial begin
     // Generate test patterns
     $display("Starting test pattern generation for %d test cases...", NUM_TEST_CASES);
     
-    while (test_case_counter < NUM_TEST_CASES) begin
+    while (test_case_counter < NUM_TEST_CASES && generate_transactions) begin
         // Select pattern type based on counter
         pattern_type = test_case_counter % PATTERN_TYPES;
         
@@ -395,6 +552,41 @@ initial begin
     // Wait for completion
     repeat(100) @(posedge clk);
     
+    // Drain the pipeline to process all in-flight transactions
+    $display("\nDraining pipeline to complete in-flight transactions...");
+    
+    // Stop generating new transactions
+    generate_transactions = 0;
+    
+    // Wait for all in-flight transactions to complete or be rejected
+    begin
+        integer drain_cycles;
+        reg drain_complete;
+        drain_cycles = 0;
+        drain_complete = 0;
+    
+    while (!drain_complete && drain_cycles < 1000) begin  // Generous timeout
+        @(posedge clk);
+        drain_cycles = drain_cycles + 1;
+        
+        if (transactions_in_flight == 0) begin
+            $display("Pipeline drained successfully after %0d cycles.", drain_cycles);
+            drain_complete = 1;
+        end
+    end
+    
+        if (!drain_complete) begin
+            $display("Warning: Pipeline drain timed out after %0d cycles. %0d transactions still in flight.",
+                     drain_cycles, transactions_in_flight);
+            $display("Pipeline stage breakdown of in-flight transactions:");
+            $display("  In conflict_checker stage: %0d", transactions_in_conflict_checker);
+            $display("  In insertion stage:       %0d", transactions_in_insertion);
+            $display("  In batch stage:          %0d", transactions_in_batch);
+            $display("  Total:                   %0d", 
+                     transactions_in_conflict_checker + transactions_in_insertion + transactions_in_batch);
+        end
+    end
+    
     // Calculate performance metrics
     simulation_time_ns = $time / 1000.0;  // Convert to ns
     transactions_per_cycle = transactions_completed * 1.0 / total_cycles;
@@ -449,6 +641,46 @@ initial begin
              total_transactions_submitted > 0 ? (transactions_completed * 100.0 / total_transactions_submitted) : 0);
     $display("  Currently in-flight: %0d (%.2f%%)", transactions_in_flight,
              total_transactions_submitted > 0 ? (transactions_in_flight * 100.0 / total_transactions_submitted) : 0);
+    $display("  Pipeline stage breakdown of in-flight transactions:");
+    $display("    In conflict_checker stage: %0d (%.2f%%)", transactions_in_conflict_checker,
+             transactions_in_flight > 0 ? (transactions_in_conflict_checker * 100.0 / transactions_in_flight) : 0);
+    $display("    In insertion stage:       %0d (%.2f%%)", transactions_in_insertion,
+             transactions_in_flight > 0 ? (transactions_in_insertion * 100.0 / transactions_in_flight) : 0);
+    $display("    In batch stage:          %0d (%.2f%%)", transactions_in_batch,
+             transactions_in_flight > 0 ? (transactions_in_batch * 100.0 / transactions_in_flight) : 0);
+    
+    $display("Detailed Pipeline Flow Analysis:");
+    $display("    Transactions entering conflict_checker: %0d", transactions_entering_conflict_checker);
+    $display("    Transactions exiting conflict_checker:  %0d", transactions_exiting_conflict_checker);
+    $display("    Conflict checker efficiency:           %.2f%%", 
+             transactions_entering_conflict_checker > 0 ? 
+             (transactions_exiting_conflict_checker * 100.0 / transactions_entering_conflict_checker) : 0);
+             
+    $display("    Transactions entering insertion:       %0d", transactions_entering_insertion);
+    $display("    Transactions exiting insertion:        %0d", transactions_exiting_insertion);
+    $display("    Insertion efficiency:                 %.2f%%", 
+             transactions_entering_insertion > 0 ? 
+             (transactions_exiting_insertion * 100.0 / transactions_entering_insertion) : 0);
+             
+    $display("    Transactions entering batch:          %0d", transactions_entering_batch);
+    $display("    Transactions exiting batch:           %0d", transactions_exiting_batch);
+    $display("    Batch efficiency:                    %.2f%%", 
+             transactions_entering_batch > 0 ? 
+             (transactions_exiting_batch * 100.0 / transactions_entering_batch) : 0);
+    
+    // Report any stalls detected
+    if (conflict_checker_stalled || insertion_stalled || batch_stalled || total_batch_stall_count > 0) begin
+        $display("Pipeline Stall Analysis:");
+        if (conflict_checker_stalled)
+            $display("    WARNING: Conflict checker stage stalled for %0d cycles", conflict_checker_stall_cycles);
+        if (insertion_stalled)
+            $display("    WARNING: Insertion stage stalled for %0d cycles", insertion_stall_cycles);
+        if (batch_stalled)
+            $display("    WARNING: Batch stage stalled for %0d cycles", batch_stall_cycles);
+        if (total_batch_stall_count > 0)
+            $display("    WARNING: Batch module reported %0d stalls with FLUSH mechanism activated", total_batch_stall_count);
+        $display("    Current batch size: %0d", total_current_batch_size);
+    end
     $display("  Dropped (backpressure): %0d (%.2f%%)", transactions_dropped,
              total_transactions_submitted > 0 ? (transactions_dropped * 100.0 / total_transactions_submitted) : 0);
     $display("\nDetailed Conflict Analysis:");

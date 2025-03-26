@@ -30,7 +30,9 @@ module conflict_checker #(
     output reg [31:0] waw_conflicts,
     output reg [31:0] war_conflicts,
     output reg [31:0] filter_hits,
-    output reg [31:0] transactions_processed
+    output reg [31:0] transactions_processed,
+    output reg [31:0] transactions_in_queue,
+    output reg [31:0] transactions_in_batch
 );
 
 // Batch dependency tracking

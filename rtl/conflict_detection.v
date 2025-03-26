@@ -34,6 +34,10 @@ module conflict_detection #(
     output wire [31:0] queue_occupancy,
     output wire [31:0] transactions_processed,  // From conflict checker - tracks total valid transactions
     output wire [31:0] transactions_batched,   // From batch module - tracks transactions in completed batches
+    output wire [31:0] batch_stall_count,      // From batch module - counts stalls in batch stage
+    output wire [31:0] current_batch_size,     // From batch module - current number of transactions in batch
+    output wire [31:0] transactions_in_queue,  // From insertion module - tracks transactions in queue
+    output wire [31:0] transactions_in_batch,  // From batch module - tracks transactions in current batch
     output wire batch_completed                // Indicates when a batch has completed
 );
 
@@ -110,7 +114,8 @@ module conflict_detection #(
         .m_axis_tdata_write_dependencies(insertion_to_batch_tdata_write_dependencies),
         
         // Performance monitoring
-        .queue_occupancy(queue_occupancy)
+        .queue_occupancy(queue_occupancy),
+        .transactions_in_queue(transactions_in_queue)
     );
     
     // Instantiate batch stage
@@ -140,7 +145,10 @@ module conflict_detection #(
         
         // Performance monitoring
         .transactions_batched(transactions_batched),
-        .transaction_accepted(transaction_accepted)
+        .transaction_accepted(transaction_accepted),
+        .batch_stall_count(batch_stall_count),
+        .current_batch_size(current_batch_size),
+        .transactions_in_batch(transactions_in_batch)
     );
 
 endmodule
