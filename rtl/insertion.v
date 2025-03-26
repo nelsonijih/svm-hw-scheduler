@@ -27,8 +27,8 @@ module insertion #(
 
     // FSM states
     localparam IDLE = 2'b00;
-    localparam PROCESS = 2'b01;
-    localparam OUTPUT = 2'b10;
+    localparam OUTPUT = 2'b01;
+    localparam WAIT_ACCEPT = 2'b10;
     reg [1:0] state;
     
     // Queue storage
@@ -89,6 +89,7 @@ module insertion #(
                         m_axis_tdata_write_dependencies <= write_dependencies_queue[queue_head];
                         current_from_queue <= 1'b1;
                         state <= OUTPUT;
+                        transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                     else if (s_axis_tvalid && !queue_full) begin
                         // Directly forward if queue empty
@@ -98,39 +99,34 @@ module insertion #(
                         m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
                         current_from_queue <= 1'b0;
                         state <= OUTPUT;
+                        transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                 end
                 
                 OUTPUT: begin
-                    // Keep trying to send current transaction while accepting new ones
+                    // Hold current transaction until accepted
                     m_axis_tvalid <= 1'b1;
+                    s_axis_tready <= 1'b0; // Don't accept new transactions while outputting
                     
                     if (m_axis_tready) begin
-                        // Transaction accepted
                         if (current_from_queue) begin
                             // Update queue if current transaction was from queue
                             queue_head <= next_head;
                             queue_empty <= (next_head == queue_tail);
                             queue_full <= 1'b0;
                             queue_occupancy <= queue_occupancy - 1'b1;
-                            transactions_in_flight <= transactions_in_flight - 1'b1;
-                            transactions_in_queue <= transactions_in_queue - 1'b1;
-                            
-                            // Try to start next transaction immediately
-                            if (next_head != queue_tail) begin
-                                m_axis_tdata_owner_programID <= owner_programID_queue[next_head];
-                                m_axis_tdata_read_dependencies <= read_dependencies_queue[next_head];
-                                m_axis_tdata_write_dependencies <= write_dependencies_queue[next_head];
-                                current_from_queue <= 1'b1;
-                            end else begin
-                                state <= IDLE;
-                            end
-                        end else begin
-                            state <= IDLE;
                         end
+                        
+                        transactions_in_queue <= transactions_in_queue - 1'b1;
+                        state <= WAIT_ACCEPT;
                     end
+                end
+                
+                WAIT_ACCEPT: begin
+                    // Clear valid and prepare for next transaction
+                    m_axis_tvalid <= 1'b0;
+                    s_axis_tready <= !queue_full;
                     
-                    // Always try to accept new transactions if queue isn't full
                     if (s_axis_tvalid && !queue_full) begin
                         // Queue new transaction
                         owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
@@ -141,12 +137,9 @@ module insertion #(
                         queue_empty <= 1'b0;
                         queue_full <= (next_tail == queue_head);
                         queue_occupancy <= queue_occupancy + 1'b1;
-                        transactions_in_flight <= transactions_in_flight + 1'b1;
-                        transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                     
-                    // Update s_axis_tready based on queue status
-                    s_axis_tready <= !queue_full;
+                    state <= IDLE;
                 end
                 
                 default: begin
