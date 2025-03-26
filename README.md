@@ -17,12 +17,12 @@ High-level idea: Accelerate conflict detection from the `fd_pack_schedule_impl` 
 
 
 ## Design Implementation Overview & Components
-- *rtl/top.v* -  Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
-- *rtl/conflict_detection.v* - An instance of all 3-stages of conflict detection wired together.
-- *rtl/conflict_checker.v* - Responsible for checking conflicts between transactions and the current batch
-- *rtl/insertion.v* - Responsible for signaling to the batch to accept transaction from the filter_engine
-- *rtl/batch.v* - Responsible for adding a deconflicted transaction from the filter engine into the batch. 
-- *tb/tb_svm_scheduler.v/* - Test cases with transactions that conflict and do not.
+- *`rtl/top.v`* -  Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
+- *`rtl/conflict_detection.v`* - An instance of all 3-stages of conflict detection wired together.
+- *`rtl/conflict_checker.v`* - Responsible for checking conflicts between transactions and the current batch
+- *`rtl/insertion.v`* - Responsible for signaling to the batch to accept transaction from the filter_engine
+- *`rtl/batch.v`* - Responsible for adding a deconflicted transaction from the filter engine into the batch. 
+- *`tb/tb_svm_scheduler.v`* - Test cases with transactions that conflict and do not.
 
 ## Prerequisite
 - Install verilog simulator(e.g icarius) and Wave form viewer(e.g gtkwave)
