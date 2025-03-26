@@ -17,13 +17,12 @@ High-level idea: Accelerate conflict detection from the `fd_pack_schedule_impl` 
 
 
 ## Design Implementation Overview & Components
-- *rtl/top.v*: Responsible for receiving transaction
+- *rtl/top.v*: Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
+- *rtl/conflict_detection.v*: An instance of all 3-stages of conflict detection wired together.
 - *rtl/conflict_checker.v*: Responsible for checking conflicts between transactions and the current batch
-- *rtl/filter_engine.v*: Responsible for applying a filter on the transaction against the batch's current filter rules that is constructed as transactions gets added to the the current batch.
 - *rtl/insertion.v*: Responsible for signaling to the batch to accept transaction from the filter_engine
-- *rtl/batch.v*: Responsible for adding a deconflicted transaction from the filter engine into the batch. Max of 48 transactions per batch.
+- *rtl/batch.v*: Responsible for adding a deconflicted transaction from the filter engine into the batch. 
 - *tb/tb_svm_scheduler.v/*: Test cases with transactions that conflict and do not.
-- *tb/tb_simplified.v/*: Additional test cases for the simplified architecture.
 
 ## Simplified Architecture
 The project has been updated with a simplified architecture that improves hardware efficiency:
@@ -130,37 +129,18 @@ Blow is simulation sample output
 ## Testing
 
 ### TODO - Additional Testbenches
-1. `tb/tb_conflict_checker.v`
-   - Tests basic transaction forwarding
-   - Verifies prefetch buffer functionality
-   - Checks conflict handling
-   - Tests back-to-back transactions
+1. module/stage specific testbenches.
 
-2. `tb/tb_filter_engine.v`
-   - Tests conflict detection scenarios
-   - Checks multiple transaction handling
-
-3. `tb/tb_simplified.v`
-   - Tests the simplified architecture
-   - Verifies all conflict types (RAW, WAW, WAR)
-   - Validates full dependency vector processing
-
-## Performance Monitoring
-
+## TODO: Performance Monitoring
 The design includes several performance counters:
-1. Transactions processed
-2. Conflicts detected (by type)
-3. Filter hits
+
 
 ## Future Improvements
 
  **Performance Optimization**
-  - Implement parallel conflict detection for higher throughput
-  - Optimize batch size dynamically based on workload characteristics
-  - Reduce critical path latency in conflict checking logic
+  - Using of Bloom filters to quickly reject obvious conflicts and fast conflict detection
+  - Using of CAM for fast actual conflict detection.
 
-- **Architecture Enhancements**
-  - Add support for transaction priorities?
 
 - **Memory Efficiency**
   - Create a Tx read/write dependencies as a hashmap function that maps to an index of 1024 array(assuming no colossion) e.g 64-bit addr maps to just setting a single bit at a hashmap location. 
