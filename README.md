@@ -17,34 +17,12 @@ High-level idea: Accelerate conflict detection from the `fd_pack_schedule_impl` 
 
 
 ## Design Implementation Overview & Components
-- *rtl/top.v*: Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
-- *rtl/conflict_detection.v*: An instance of all 3-stages of conflict detection wired together.
-- *rtl/conflict_checker.v*: Responsible for checking conflicts between transactions and the current batch
-- *rtl/insertion.v*: Responsible for signaling to the batch to accept transaction from the filter_engine
-- *rtl/batch.v*: Responsible for adding a deconflicted transaction from the filter engine into the batch. 
-- *tb/tb_svm_scheduler.v/*: Test cases with transactions that conflict and do not.
-
-## Simplified Architecture
-The project has been updated with a simplified architecture that improves hardware efficiency:
-
-### Key Changes
-1. **Consolidated Conflict Detection**:
-   - Removed parallel conflict checker instances (NUM_PARALLEL_CHECKS parameter)
-   - Implemented a single conflict checker module that processes the full dependency vector
-   - Increased CHUNK_SIZE from 256 to 1024 bits for full vector processing
-
-2. **Improved Conflict Detection**:
-   - Comprehensive conflict checking in a single stage
-   - Maintained detection for all three conflict types:
-     * RAW (Read-After-Write)
-     * WAW (Write-After-Write)
-     * WAR (Write-After-Read)
-   - Enhanced debug output with detailed conflict reporting
-
-3. **Simplified Data Flow**:
-   - Streamlined communication between modules
-   - Reduced hardware complexity
-   - Maintained AXI-Stream interface protocol
+- *rtl/top.v* -  Top level responsible for specifying the number of conflict_detection isntances we want, and forwarding the transactions to the conflict_detection instances in round-robin fashion.
+- *rtl/conflict_detection.v* - An instance of all 3-stages of conflict detection wired together.
+- *rtl/conflict_checker.v* - Responsible for checking conflicts between transactions and the current batch
+- *rtl/insertion.v* - Responsible for signaling to the batch to accept transaction from the filter_engine
+- *rtl/batch.v* - Responsible for adding a deconflicted transaction from the filter engine into the batch. 
+- *tb/tb_svm_scheduler.v/* - Test cases with transactions that conflict and do not.
 
 ## Prerequisite
 - Install verilog simulator(e.g icarius) and Wave form viewer(e.g gtkwave)
@@ -56,12 +34,6 @@ The project has been updated with a simplified architecture that improves hardwa
 ## Tests
 The test bench contains several transactions tests that conflict and some that do not
 conflict. 
-### Running Additional Tests
-```bash
-
-# Run original scheduler tests
-make sim
-make wave
 
 Blow is simulation sample output
 <img width="1438" alt="svm-schduler-sim" src="https://github.com/user-attachments/assets/190b9e65-7967-43a9-8890-91d06e5bdaa5" />
