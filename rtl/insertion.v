@@ -1,3 +1,8 @@
+////////////
+// Enhanced insertion module that includes dependency tracking
+// Now directly connected to input and handles dependency accumulation
+////////////
+
 module insertion #(
     parameter MAX_DEPENDENCIES = 256,
     parameter MAX_PENDING_TRANSACTIONS = 16,
@@ -20,7 +25,22 @@ module insertion #(
     output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_read_dependencies,
     output reg [MAX_DEPENDENCIES-1:0] m_axis_tdata_write_dependencies,
     
-    // Performance monitoring
+    // Batch control
+    input wire batch_completed,
+    
+    // Global dependency tracking
+    output reg [MAX_DEPENDENCIES-1:0] batch_read_deps_union,
+    output reg [MAX_DEPENDENCIES-1:0] batch_write_deps_union,
+    output reg [63:0] batch_owner_id,  // Owner ID for batch (for temporal conflict detection)
+    
+    // Performance monitoring (from conflict_checker)
+    output reg [31:0] raw_conflicts,
+    output reg [31:0] waw_conflicts,
+    output reg [31:0] war_conflicts,
+    output reg [31:0] filter_hits,
+    output reg [31:0] transactions_processed,
+    
+    // Original performance monitoring
     output reg [31:0] queue_occupancy,
     output reg [31:0] transactions_in_queue
 );
@@ -30,6 +50,10 @@ module insertion #(
     localparam OUTPUT = 2'b01;
     localparam WAIT_ACCEPT = 2'b10;
     reg [1:0] state;
+    
+    // Batch dependency tracking (moved from conflict_checker)
+    reg [MAX_DEPENDENCIES-1:0] batch_read_dependencies;
+    reg [MAX_DEPENDENCIES-1:0] batch_write_dependencies;
     
     // Queue storage
     reg [63:0] owner_programID_queue [0:INSERTION_QUEUE_DEPTH-1];
@@ -61,6 +85,20 @@ module insertion #(
             m_axis_tdata_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             m_axis_tdata_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
             
+            // Batch dependency tracking reset
+            batch_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            batch_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            batch_read_deps_union <= {MAX_DEPENDENCIES{1'b0}};
+            batch_write_deps_union <= {MAX_DEPENDENCIES{1'b0}};
+            batch_owner_id <= 64'd0;  // Initialize batch owner ID
+            
+            // Performance counters reset
+            raw_conflicts <= 32'd0;
+            waw_conflicts <= 32'd0;
+            war_conflicts <= 32'd0;
+            filter_hits <= 32'd0;
+            transactions_processed <= 32'd0;
+            
             queue_head <= 6'd0;
             queue_tail <= 6'd0;
             queue_empty <= 1'b1;
@@ -74,6 +112,24 @@ module insertion #(
         else begin
             // Increment debug counter
             debug_cycles <= debug_cycles + 1'b1;
+            
+            // Update dependency unions for global manager
+            batch_read_deps_union <= batch_read_dependencies;
+            batch_write_deps_union <= batch_write_dependencies;
+            
+            // Update batch owner ID - use the owner ID of the first transaction in the batch
+            // This helps with temporal conflict detection
+            if (queue_empty && s_axis_tvalid && s_axis_tready) begin
+                // First transaction in a new batch
+                batch_owner_id <= s_axis_tdata_owner_programID;
+            end
+            
+            // Handle batch completion
+            if (batch_completed) begin
+                // Clear all batch dependencies
+                batch_read_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+                batch_write_dependencies <= {MAX_DEPENDENCIES{1'b0}};
+            end
             
             case (state)
                 IDLE: begin
@@ -99,6 +155,13 @@ module insertion #(
                         m_axis_tdata_write_dependencies <= s_axis_tdata_write_dependencies;
                         current_from_queue <= 1'b0;
                         state <= OUTPUT;
+                        
+                        // Update dependency tracking
+                        batch_read_dependencies <= batch_read_dependencies | s_axis_tdata_read_dependencies;
+                        batch_write_dependencies <= batch_write_dependencies | s_axis_tdata_write_dependencies;
+                        
+                        // Update transactions processed counter
+                        transactions_processed <= transactions_processed + 1;
                         transactions_in_queue <= transactions_in_queue + 1'b1;
                     end
                 end
@@ -132,6 +195,13 @@ module insertion #(
                         owner_programID_queue[queue_tail] <= s_axis_tdata_owner_programID;
                         read_dependencies_queue[queue_tail] <= s_axis_tdata_read_dependencies;
                         write_dependencies_queue[queue_tail] <= s_axis_tdata_write_dependencies;
+                        
+                        // Update dependency tracking
+                        batch_read_dependencies <= batch_read_dependencies | s_axis_tdata_read_dependencies;
+                        batch_write_dependencies <= batch_write_dependencies | s_axis_tdata_write_dependencies;
+                        
+                        // Update transactions processed counter
+                        transactions_processed <= transactions_processed + 1;
                         
                         queue_tail <= next_tail;
                         queue_empty <= 1'b0;

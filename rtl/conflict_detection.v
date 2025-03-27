@@ -38,19 +38,17 @@ module conflict_detection #(
     output wire [31:0] current_batch_size,     // From batch module - current number of transactions in batch
     output wire [31:0] transactions_in_queue,  // From insertion module - tracks transactions in queue
     output wire [31:0] transactions_in_batch,  // From batch module - tracks transactions in current batch
-    output wire batch_completed                // Indicates when a batch has completed
+    output wire batch_completed,               // Indicates when a batch has completed
+    
+    // Global dependency tracking interface
+    output wire new_batch_valid,              // Signal to register new batch with global manager
+    output wire [MAX_DEPENDENCIES-1:0] batch_read_deps_union,  // Union of read dependencies in batch
+    output wire [MAX_DEPENDENCIES-1:0] batch_write_deps_union, // Union of write dependencies in batch
+    output wire [63:0] batch_owner_id        // Owner ID for the batch (for temporal conflict detection)
 );
 
     // Transaction accepted signal
     wire transaction_accepted;
-    
-    // Conflict checker to insertion connections
-    wire conflict_checker_to_insertion_tvalid;
-    wire conflict_checker_to_insertion_tready;
-    wire [63:0] conflict_checker_to_insertion_tdata_owner_programID;
-    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_read_dependencies;
-    wire [MAX_DEPENDENCIES-1:0] conflict_checker_to_insertion_tdata_write_dependencies;
-    // has_conflict signal removed as conflict_checker now only forwards non-conflicting transactions
     
     // Insertion to batch connections
     wire insertion_to_batch_tvalid;
@@ -59,37 +57,8 @@ module conflict_detection #(
     wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_read_dependencies;
     wire [MAX_DEPENDENCIES-1:0] insertion_to_batch_tdata_write_dependencies;
     
-    // Instantiate enhanced conflict checker with filtering
-    conflict_checker #(
-        .MAX_DEPENDENCIES(MAX_DEPENDENCIES)
-    ) conflict_checker_inst (
-        .clk(clk),
-        .rst_n(rst_n),
-        
-        // Input interface
-        .s_axis_tvalid(s_axis_tvalid),
-        .s_axis_tready(s_axis_tready),
-        .s_axis_tdata_owner_programID(s_axis_tdata_owner_programID),
-        .s_axis_tdata_read_dependencies(s_axis_tdata_read_dependencies),
-        .s_axis_tdata_write_dependencies(s_axis_tdata_write_dependencies),
-        
-        // Output interface
-        .m_axis_tvalid(conflict_checker_to_insertion_tvalid),
-        .m_axis_tready(conflict_checker_to_insertion_tready),
-        .m_axis_tdata_owner_programID(conflict_checker_to_insertion_tdata_owner_programID),
-        .m_axis_tdata_read_dependencies(conflict_checker_to_insertion_tdata_read_dependencies),
-        .m_axis_tdata_write_dependencies(conflict_checker_to_insertion_tdata_write_dependencies),
-        
-        // Batch control signals
-        .batch_completed(batch_completed),
-        
-        // Performance monitoring
-        .raw_conflicts(raw_conflicts),
-        .waw_conflicts(waw_conflicts),
-        .war_conflicts(war_conflicts),
-        .filter_hits(filter_hits),
-        .transactions_processed(transactions_processed)
-    );
+    // Note: conflict_checker stage has been removed
+    // Input now connects directly to insertion stage
     
     // Instantiate insertion stage
     insertion #(
@@ -99,12 +68,12 @@ module conflict_detection #(
         .clk(clk),
         .rst_n(rst_n),
         
-        // Input interface
-        .s_axis_tvalid(conflict_checker_to_insertion_tvalid),
-        .s_axis_tready(conflict_checker_to_insertion_tready),
-        .s_axis_tdata_owner_programID(conflict_checker_to_insertion_tdata_owner_programID),
-        .s_axis_tdata_read_dependencies(conflict_checker_to_insertion_tdata_read_dependencies),
-        .s_axis_tdata_write_dependencies(conflict_checker_to_insertion_tdata_write_dependencies),
+        // Input interface connected directly to module inputs
+        .s_axis_tvalid(s_axis_tvalid),
+        .s_axis_tready(s_axis_tready),
+        .s_axis_tdata_owner_programID(s_axis_tdata_owner_programID),
+        .s_axis_tdata_read_dependencies(s_axis_tdata_read_dependencies),
+        .s_axis_tdata_write_dependencies(s_axis_tdata_write_dependencies),
         
         // Output interface
         .m_axis_tvalid(insertion_to_batch_tvalid),
@@ -113,7 +82,22 @@ module conflict_detection #(
         .m_axis_tdata_read_dependencies(insertion_to_batch_tdata_read_dependencies),
         .m_axis_tdata_write_dependencies(insertion_to_batch_tdata_write_dependencies),
         
-        // Performance monitoring
+        // Batch control signals
+        .batch_completed(batch_completed),
+        
+        // Global dependency tracking
+        .batch_read_deps_union(batch_read_deps_union),
+        .batch_write_deps_union(batch_write_deps_union),
+        .batch_owner_id(batch_owner_id),
+        
+        // Performance monitoring (moved from conflict_checker)
+        .raw_conflicts(raw_conflicts),
+        .waw_conflicts(waw_conflicts),
+        .war_conflicts(war_conflicts),
+        .filter_hits(filter_hits),
+        .transactions_processed(transactions_processed),
+        
+        // Original performance monitoring
         .queue_occupancy(queue_occupancy),
         .transactions_in_queue(transactions_in_queue)
     );
@@ -142,6 +126,11 @@ module conflict_detection #(
         
         // Batch completion signal
         .batch_completed(batch_completed),
+        
+        // Global dependency tracking
+        .new_batch_valid(new_batch_valid),
+        .batch_read_deps_union(batch_read_deps_union),
+        .batch_write_deps_union(batch_write_deps_union),
         
         // Performance monitoring
         .transactions_batched(transactions_batched),

@@ -25,6 +25,11 @@ module batch #(
     // Batch completion signal
     output reg batch_completed,
     
+    // Global dependency interface
+    output reg new_batch_valid,              // Signal to register new batch with global manager
+    output reg [MAX_DEPENDENCIES-1:0] batch_read_deps_union,    // Union of all read dependencies in the batch
+    output reg [MAX_DEPENDENCIES-1:0] batch_write_deps_union,   // Union of all write dependencies in the batch
+    
     // Performance monitoring
     output reg [31:0] transactions_batched,    // Total transactions in completed batches
     output wire transaction_accepted,
@@ -61,6 +66,17 @@ module batch #(
     reg output_stall_detected;
     reg [31:0] stall_counter;
     
+    // Union of dependencies for batch
+    always @(*) begin
+        batch_read_deps_union = {MAX_DEPENDENCIES{1'b0}};
+        batch_write_deps_union = {MAX_DEPENDENCIES{1'b0}};
+        
+        for (int i = 0; i < batch_count; i = i + 1) begin
+            batch_read_deps_union = batch_read_deps_union | batch_read_deps[i];
+            batch_write_deps_union = batch_write_deps_union | batch_write_deps[i];
+        end
+    end
+    
     // Main control logic
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -79,6 +95,7 @@ module batch #(
             debug_cycles <= 32'd0;
             transactions_in_batch <= 32'd0;
             batch_completed <= 1'b0;
+            new_batch_valid <= 1'b0;
             output_stall_detected <= 1'b0;
             stall_counter <= 32'd0;
             batch_stall_count <= 32'd0;
@@ -94,6 +111,7 @@ module batch #(
             // Default assignments
             s_axis_tready <= 1'b0;
             batch_completed <= 1'b0;
+            new_batch_valid <= 1'b0;
             current_batch_size <= batch_count; // Update performance counter
             
             // Reset counters when starting a new batch
@@ -139,6 +157,7 @@ module batch #(
                     // Reset batch state for a new batch
                     batch_count <= 4'd0;
                     output_index <= 4'd0;
+                    batch_completed <= 1'b0;  // Clear batch completion flag
                     timeout_counter <= 32'd0;
                     batch_completed <= 1'b0;
                     // Ready to accept new transaction
@@ -163,51 +182,65 @@ module batch #(
                     // Only accept new transactions if we have space
                     s_axis_tready <= (batch_count < MAX_BATCH_SIZE);
                     
-                    if (s_axis_tvalid && s_axis_tready) begin
-                        if (batch_count >= MAX_BATCH_SIZE) begin
-                            // Safety check - should never happen due to s_axis_tready condition
-                            $display("ERROR: Attempting to add transaction when batch_count (%0d) >= MAX_BATCH_SIZE (%0d)", batch_count, MAX_BATCH_SIZE);
-                            state <= OUTPUT;
-                            output_index <= 4'd0;
-                        end else begin
-                            // Store transaction in batch
-                            batch_owner_programID[batch_count] <= s_axis_tdata_owner_programID;
-                            batch_read_deps[batch_count] <= s_axis_tdata_read_dependencies;
-                            batch_write_deps[batch_count] <= s_axis_tdata_write_dependencies;
-                            
-                            // Update batch count and reset timeout
-                            batch_count <= batch_count + 1'b1;
-                            transactions_in_batch <= transactions_in_batch + 1'b1;
-                            timeout_counter <= 32'd0;
-                            
-                            // Debug output for transaction tracking
-                            if (DEBUG_ENABLE) begin
-                                $display("\nAdding transaction to batch:");
-                                $display("  Current batch size: %0d", batch_count + 1'b1);
-                                $display("  Max batch size: %0d", MAX_BATCH_SIZE);
-                                $display("  Total transactions batched: %0d", transactions_batched);
-                            end
-                            
-                            // If this transaction fills the batch, move to output
+                    // Check for batch completion conditions
+                    if (batch_count > 0 && (
+                        (batch_count >= MAX_BATCH_SIZE) ||
+                        (batch_count >= MIN_BATCH_SIZE && timeout_counter >= BATCH_TIMEOUT_CYCLES) ||
+                        (!s_axis_tvalid && timeout_counter >= BATCH_TIMEOUT_CYCLES)
+                    )) begin
+                        // Move to output if we have enough transactions
+                        state <= OUTPUT;
+                        output_index <= 4'd0;
+                        new_batch_valid <= 1'b1; // Register batch with global manager
+                        if (DEBUG_ENABLE) begin
+                            $display("\nBatch ready for output:");
+                            $display("  Batch size: %0d", batch_count);
+                            $display("  Timeout counter: %0d", timeout_counter);
+                        end
+                    end else if (s_axis_tvalid && s_axis_tready) begin
+                        // Store transaction in batch
+                        batch_owner_programID[batch_count] <= s_axis_tdata_owner_programID;
+                        batch_read_deps[batch_count] <= s_axis_tdata_read_dependencies;
+                        batch_write_deps[batch_count] <= s_axis_tdata_write_dependencies;
+                        
+                        // Update batch count and reset timeout
+                        batch_count <= batch_count + 1'b1;
+                        transactions_in_batch <= transactions_in_batch + 1'b1;
+                        timeout_counter <= 32'd0;
+                        
+                        // Debug output for transaction tracking
+                        if (DEBUG_ENABLE) begin
+                            $display("\nAdding transaction to batch:");
+                            $display("  Current batch size: %0d", batch_count + 1'b1);
+                            $display("  Max batch size: %0d", MAX_BATCH_SIZE);
+                            $display("  Total transactions batched: %0d", transactions_batched);
                             if (batch_count + 1'b1 >= MAX_BATCH_SIZE) begin
-                                state <= OUTPUT;
-                                output_index <= 4'd0;
-                                if (DEBUG_ENABLE) $display("  Batch full - moving to OUTPUT state");
+                                $display("  Batch full - moving to OUTPUT state");
                             end
                         end
+                        
+                        // If this transaction fills the batch, move to output
+                        if (batch_count + 1'b1 >= MAX_BATCH_SIZE) begin
+                            state <= OUTPUT;
+                            output_index <= 4'd0;
+                            new_batch_valid <= 1'b1; // Register batch with global manager
+                            if (DEBUG_ENABLE) $display("  Batch full - moving to OUTPUT state");
+                        end
                     end
-                    else if (batch_count > 0) begin
-                        // Only check timeouts if we have transactions
+                    
+                    // Check timeouts if we have transactions
+                    if (batch_count > 0) begin
                         if (timeout_counter >= BATCH_TIMEOUT_CYCLES && batch_count >= MIN_BATCH_SIZE) begin
                             // Normal timeout with sufficient transactions
                             state <= OUTPUT;
                             output_index <= 4'd0;
+                            new_batch_valid <= 1'b1; // Register batch with global manager
                             if (DEBUG_ENABLE) $display("  Batch timeout with %0d transactions - moving to OUTPUT state", batch_count);
-                        end
-                        else if (timeout_counter >= BATCH_TIMEOUT_CYCLES * 2 && batch_count < MIN_BATCH_SIZE) begin
+                        end else if (timeout_counter >= BATCH_TIMEOUT_CYCLES * 2 && batch_count < MIN_BATCH_SIZE) begin
                             // Extended timeout for small batches
                             state <= OUTPUT;
                             output_index <= 4'd0;
+                            new_batch_valid <= 1'b1; // Register batch with global manager
                             if (DEBUG_ENABLE) $display("  Extended batch timeout with %0d transactions - moving to OUTPUT state", batch_count);
                         end
                     end
@@ -224,9 +257,6 @@ module batch #(
                             timeout_counter <= 32'd0;
                             if (DEBUG_ENABLE) $display("  SAFETY TIMEOUT - resetting to IDLE with no transactions");
                         end
-                    end else begin
-                        // No transactions, reset timeout
-                        timeout_counter <= 32'd0;
                     end
                 end
                 
@@ -362,9 +392,42 @@ module batch #(
                 end
             endcase
             
-            // Safety timeout - if stuck for too long, reset state
-            if (debug_cycles > 1000) begin
-                state <= IDLE;
+            // Safety timeout handling
+            if (debug_cycles > 500) begin  // Reduced timeout
+                if (DEBUG_ENABLE) begin
+                    $display("\nWARNING: Safety timeout triggered in state %d", state);
+                    $display("  Current batch size: %0d", batch_count);
+                    $display("  Output index: %0d", output_index);
+                end
+                
+                case (state)
+                    COLLECT: begin
+                        // If we have transactions, try to output them
+                        if (batch_count > 0) begin
+                            state <= OUTPUT;
+                            output_index <= 4'd0;
+                            new_batch_valid <= 1'b1;
+                            if (DEBUG_ENABLE) begin
+                                $display("  Moving to OUTPUT with %0d transactions", batch_count);
+                            end
+                        end else begin
+                            // Otherwise reset
+                            state <= IDLE;
+                        end
+                    end
+                    OUTPUT, FLUSH: begin
+                        // Force completion and move to IDLE
+                        batch_completed <= 1'b1;
+                        state <= IDLE;
+                        if (DEBUG_ENABLE) begin
+                            $display("  Forcing batch completion");
+                        end
+                    end
+                    default: begin
+                        state <= IDLE;
+                    end
+                endcase
+                
                 s_axis_tready <= 1'b1;
                 m_axis_tvalid <= 1'b0;
                 debug_cycles <= 32'd0;
