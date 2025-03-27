@@ -13,10 +13,10 @@ SYNTH_DIR = $(BUILD_DIR)/synth
 # Source files
 # Note: conflict_checker.v has been removed as part of pipeline optimization
 VERILOG_SOURCES = $(RTL_DIR)/top.v \
-                  $(RTL_DIR)/conflict_detection.v \
+                  $(RTL_DIR)/batcher.v \
                   $(RTL_DIR)/insertion.v \
                   $(RTL_DIR)/batch.v \
-                  $(RTL_DIR)/global_dependency_manager.v
+                  $(RTL_DIR)/conflict_manager.v
 TB_SOURCES = $(TB_DIR)/tb_svm_scheduler.v
 
 # Output files

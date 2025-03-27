@@ -179,14 +179,14 @@ always @(posedge clk) begin
         end
         
         // Track conflict types
-        if (dut.gdm_inst.raw_conflict_count > tracked_raw_conflicts) begin
-            tracked_raw_conflicts <= dut.gdm_inst.raw_conflict_count;
+        if (dut.cm_inst.raw_conflict_count > tracked_raw_conflicts) begin
+            tracked_raw_conflicts <= dut.cm_inst.raw_conflict_count;
         end
-        if (dut.gdm_inst.waw_conflict_count > tracked_waw_conflicts) begin
-            tracked_waw_conflicts <= dut.gdm_inst.waw_conflict_count;
+        if (dut.cm_inst.waw_conflict_count > tracked_waw_conflicts) begin
+            tracked_waw_conflicts <= dut.cm_inst.waw_conflict_count;
         end
-        if (dut.gdm_inst.war_conflict_count > tracked_war_conflicts) begin
-            tracked_war_conflicts <= dut.gdm_inst.war_conflict_count;
+        if (dut.cm_inst.war_conflict_count > tracked_war_conflicts) begin
+            tracked_war_conflicts <= dut.cm_inst.war_conflict_count;
         end
         
         // Track batch completion

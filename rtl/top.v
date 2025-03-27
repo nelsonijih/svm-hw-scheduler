@@ -125,11 +125,11 @@ module top #(
         end
     end
     
-    // Instantiate multiple conflict_detection modules
+    // Instantiate multiple batcher modules
     genvar i;
     generate
         for (i = 0; i < NUM_PARALLEL_INSTANCES; i = i + 1) begin : cd_inst
-            conflict_detection #(
+            batcher #(
                 .MAX_DEPENDENCIES(MAX_DEPENDENCIES),
                 .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
                 .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES),
@@ -216,11 +216,11 @@ module top #(
         end
     end
     
-    // Instantiate the global dependency manager
-    global_dependency_manager #(
+    // Instantiate the conflict manager
+    conflict_manager #(
         .MAX_DEPENDENCIES(MAX_DEPENDENCIES),
         .MAX_BATCHES(MAX_BATCHES)
-    ) gdm_inst (
+    ) cm_inst (
         .clk(clk),
         .rst_n(rst_n),
         

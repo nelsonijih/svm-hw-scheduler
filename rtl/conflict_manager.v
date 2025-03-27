@@ -1,4 +1,4 @@
-module global_dependency_manager #(
+module conflict_manager #(
     parameter MAX_DEPENDENCIES = 1024,  // Dependency vector width
     parameter MAX_BATCHES = 16,        // Maximum number of concurrent batches
     parameter DEBUG_ENABLE = 1         // Enable debug output

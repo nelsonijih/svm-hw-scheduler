@@ -2,7 +2,7 @@
 // Top-level module that instantiates all the stages pipeline and connect them together for the SVM Hardware Scheduler
 ////////////
 
-module conflict_detection #(
+module batcher #(
     parameter MAX_DEPENDENCIES = 256, // Full dependency vector width
     parameter MAX_BATCH_SIZE = 8,
     parameter BATCH_TIMEOUT_CYCLES = 100,
