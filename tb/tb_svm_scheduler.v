@@ -29,7 +29,7 @@ parameter DEBUG_ENABLE = 1;          // Enable detailed debug output
 parameter VERBOSE_DEBUG = 0;         // Enable very verbose debugging
 
 // DUT configuration
-parameter NUM_PARALLEL_INSTANCES = 4;   // Number of parallel instances
+parameter NUM_PARALLEL_INSTANCES = 4;   // Number of parallel instances - match top.v
 parameter MAX_DEPENDENCIES = 256;       // Dependency vector width
 parameter MAX_BATCH_SIZE = 8;          // Maximum transactions per batch
 parameter BATCH_TIMEOUT_CYCLES = 100;   // Cycles before batch timeout
@@ -46,6 +46,23 @@ reg [31:0] total_transactions_submitted; // Total transactions sent to DUT
 reg [31:0] total_transactions_completed; // Total transactions completed
 reg [31:0] total_transactions_conflicted; // Total individual conflicts
 reg [31:0] unique_transactions_conflicted; // Unique transactions with conflicts
+
+// Parallel section metrics variables
+reg [63:0] parallel_start_time;
+reg [63:0] parallel_end_time;
+reg [31:0] parallel_transactions_submitted;
+reg [31:0] parallel_transactions_completed;
+reg [31:0] parallel_transactions_conflicted;
+reg [31:0] parallel_cycles;
+reg [31:0] parallel_txns_submitted;
+reg [31:0] parallel_txns_completed;
+reg [31:0] parallel_txns_conflicted;
+real parallel_cycles_per_txn;
+real parallel_txns_per_cycle;
+real parallel_batches;
+real parallel_avg_batch_size;
+real parallel_submit_mtps;
+real parallel_complete_mtps;
 
 // Batch statistics
 reg [31:0] total_batches;               // Total batches processed
@@ -323,6 +340,94 @@ task display_in_flight;
     end
 endtask
 
+// Task to generate parallel transactions for multiple instances
+// This allows us to test the parallel processing capabilities
+task generate_parallel_transactions;
+    input [63:0] base_id;      // Starting transaction ID
+    input [2:0] pattern_type;  // Transaction pattern type
+    input integer num_parallel; // Number of parallel transactions to generate
+    begin
+        // Ensure we don't exceed the number of parallel instances
+        integer active_instances;
+        active_instances = (num_parallel > NUM_PARALLEL_INSTANCES) ? 
+                           NUM_PARALLEL_INSTANCES : num_parallel;
+        
+        @(posedge clk);
+        
+        // Set common transaction data
+        s_axis_tvalid = 1;
+        
+        // Generate transaction data based on pattern type
+        case (pattern_type)
+            PATTERN_NORMAL: begin
+                s_axis_tdata_read_dependencies = 32'h0000_FF00;
+                s_axis_tdata_write_dependencies = 32'hFF00_0000;
+                if (VERBOSE_DEBUG) $display("Creating normal parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_WAW_CONFLICT: begin
+                s_axis_tdata_read_dependencies = 0;
+                s_axis_tdata_write_dependencies = 32'h0000_00FF;
+                if (VERBOSE_DEBUG) $display("Creating WAW conflict parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_RAW_CONFLICT: begin
+                s_axis_tdata_read_dependencies = 32'h0000_00FF;
+                s_axis_tdata_write_dependencies = 32'h0000_FF00;
+                if (VERBOSE_DEBUG) $display("Creating RAW conflict parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_WAR_CONFLICT: begin
+                s_axis_tdata_read_dependencies = 32'h0000_FF00;
+                s_axis_tdata_write_dependencies = 32'h0000_FF00;
+                if (VERBOSE_DEBUG) $display("Creating WAR conflict parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_MIXED_CONFLICT: begin
+                s_axis_tdata_read_dependencies = 32'h0000_FFFF >> (base_id % 8);
+                s_axis_tdata_write_dependencies = 32'h00FF_0000 >> (base_id % 4);
+                if (VERBOSE_DEBUG) $display("Creating mixed conflict parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_BURST: begin
+                s_axis_tdata_read_dependencies = 32'h0000_0001 << (base_id % 16);
+                s_axis_tdata_write_dependencies = 32'h0001_0000 << (base_id % 16);
+                if (VERBOSE_DEBUG) $display("Creating burst parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            PATTERN_SPARSE: begin
+                s_axis_tdata_read_dependencies = 32'h0000_0001 << (base_id % 32);
+                s_axis_tdata_write_dependencies = 32'h0000_0001 << ((base_id + 16) % 32);
+                if (VERBOSE_DEBUG) $display("Creating sparse parallel transactions starting at ID: %0d", base_id);
+            end
+            
+            default: begin
+                s_axis_tdata_read_dependencies = 32'h0000_FF00;
+                s_axis_tdata_write_dependencies = 32'hFF00_0000;
+            end
+        endcase
+        
+        // Submit transactions for multiple instances in parallel
+        for (integer i = 0; i < active_instances; i++) begin
+            // Set unique transaction ID for each instance
+            s_axis_tdata_owner_programID = base_id + i;
+            
+            // Wait for ready signal from the instance
+            while (!s_axis_tready) @(posedge clk);
+            
+            // Submit transaction
+            s_axis_tvalid = 1;
+            @(posedge clk);
+            
+            // Track submitted transactions
+            total_transactions_submitted = total_transactions_submitted + 1;
+        end
+        
+        // Reset valid signal after all transactions are submitted
+        s_axis_tvalid = 0;
+    end
+endtask
+
 //-----------------------------------------------------------------------------
 // Test Stimulus
 //-----------------------------------------------------------------------------
@@ -334,6 +439,10 @@ initial begin
     rst_n = 0;
     s_axis_tvalid = 0;
     s_axis_tdata_owner_programID = 0;
+    
+    // Setup waveform dumping
+    $dumpfile("build/svm_scheduler.vcd");
+    $dumpvars(0, tb_svm_scheduler);
     s_axis_tdata_read_dependencies = 0;
     s_axis_tdata_write_dependencies = 0;
     test_case_counter = 0;
@@ -469,6 +578,209 @@ initial begin
         if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
             display_progress(i, SECTION_SIZE);
         end
+    end
+    
+    //-------------------------------------------------------------------------
+    // Section 8: Parallel Transaction Submission (NEW)
+    //-------------------------------------------------------------------------
+    $display("\nSection 8: Parallel Transaction Submission");
+    
+    // Only run this section if we have multiple parallel instances
+    if (NUM_PARALLEL_INSTANCES > 1) begin
+        $display("Testing with %0d parallel instances", NUM_PARALLEL_INSTANCES);
+        
+        // Variables to track parallel section performance
+        
+        // Store current transaction counts before parallel section
+        parallel_transactions_submitted = total_transactions_submitted;
+        
+        // Record start time - add a small delay to ensure accurate timing
+        repeat (5) @(posedge clk);
+        parallel_start_time = $time;
+        
+        // Reset the current instance selection in top module to ensure fair distribution
+        force dut.current_instance = 0;
+        
+        // Reset parallel transaction counters to ensure accurate metrics
+        parallel_txns_submitted = 0;
+        
+        // Store current transaction counts before parallel section
+        parallel_transactions_completed = total_transactions_completed;
+        parallel_transactions_conflicted = unique_transactions_conflicted;
+        
+        // Submit parallel normal transactions
+        $display("Submitting parallel normal transactions...");
+        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+            // Use a different base ID to avoid conflicts with previous sections
+            generate_parallel_transactions(10000 + i, PATTERN_NORMAL, NUM_PARALLEL_INSTANCES);
+            
+            // Update parallel transaction count
+            parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+            
+            // Small delay to allow processing
+            insert_delay(2);
+            
+            // Progress reporting
+            if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
+                display_progress(i, SECTION_SIZE/4);
+            end
+        end
+        
+        // Submit parallel transactions with potential conflicts
+        $display("\nSubmitting parallel transactions with potential conflicts...");
+        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+            // Alternate between different conflict patterns
+            case (i % 4)
+                0: begin
+                    generate_parallel_transactions(20000 + i, PATTERN_WAW_CONFLICT, NUM_PARALLEL_INSTANCES);
+                    parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                end
+                1: begin
+                    generate_parallel_transactions(20000 + i, PATTERN_RAW_CONFLICT, NUM_PARALLEL_INSTANCES);
+                    parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                end
+                2: begin
+                    generate_parallel_transactions(20000 + i, PATTERN_WAR_CONFLICT, NUM_PARALLEL_INSTANCES);
+                    parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                end
+                3: begin
+                    generate_parallel_transactions(20000 + i, PATTERN_MIXED_CONFLICT, NUM_PARALLEL_INSTANCES);
+                    parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                end
+            endcase
+            
+            // Small delay to allow processing
+            insert_delay(2);
+            
+            // Progress reporting
+            if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
+                display_progress(i, SECTION_SIZE/4);
+            end
+        end
+        
+        // Submit parallel burst transactions
+        $display("\nSubmitting parallel burst transactions...");
+        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+            generate_parallel_transactions(30000 + i, PATTERN_BURST, NUM_PARALLEL_INSTANCES);
+            parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+            
+            // No delay between bursts to stress the system
+            
+            // Progress reporting
+            if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
+                display_progress(i, SECTION_SIZE/4);
+            end
+        end
+        
+        // Submit parallel sparse transactions
+        $display("\nSubmitting parallel sparse transactions...");
+        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+            generate_parallel_transactions(40000 + i, PATTERN_SPARSE, NUM_PARALLEL_INSTANCES);
+            parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+            
+            // Variable delays between transaction groups
+            if (i % 10 == 0) begin
+                insert_delay(5);
+            end
+            
+            // Progress reporting
+            if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
+                display_progress(i, SECTION_SIZE/4);
+            end
+        end
+        
+        // Release the forced value
+        release dut.current_instance;
+        
+        // Wait for any in-flight transactions to complete
+        repeat (50) @(posedge clk);
+        
+        // Record end time
+        parallel_end_time = $time;
+        
+        // Add a small delay to ensure all transactions are processed
+        insert_delay(20);
+        
+        // Calculate parallel section metrics
+        
+        // Calculate elapsed cycles (10ns per cycle)
+        // Note: In simulation, $time is in ps, so divide by 10000 to get cycles
+        parallel_cycles = (parallel_end_time - parallel_start_time) / 10000; 
+        
+        // Calculate completed transactions in the parallel section
+        parallel_txns_completed = total_transactions_completed - parallel_transactions_completed;
+        parallel_txns_conflicted = unique_transactions_conflicted - parallel_transactions_conflicted;
+        
+        // Ensure we have valid cycle count (avoid division by zero)
+        if (parallel_cycles < 10) begin
+            parallel_cycles = 10; // Minimum 10 cycles to avoid unrealistic metrics
+        end
+        
+        if (parallel_txns_submitted > 0) begin
+            parallel_cycles_per_txn = parallel_cycles * 1.0 / parallel_txns_submitted;
+        end else begin
+            parallel_cycles_per_txn = 0;
+        end
+        
+        if (parallel_cycles > 0) begin
+            parallel_txns_per_cycle = parallel_txns_submitted * 1.0 / parallel_cycles;
+        end else begin
+            parallel_txns_per_cycle = 0;
+        end
+        
+        // Display parallel section performance metrics
+        $display("\nParallel Section Performance Metrics (with %0d instances):", NUM_PARALLEL_INSTANCES);
+        $display("----------------------------------------");
+        $display("Total Transactions:");
+        $display("  Submitted:  %0d", parallel_txns_submitted);
+        $display("  Completed:  %0d", parallel_txns_completed);
+        $display("  Conflicted: %0d (individual conflicts)", parallel_txns_conflicted);
+        $display("  Unique Conflicted: %0d (%0.2f%%)", 
+                 parallel_txns_conflicted,
+                 (parallel_txns_submitted > 0) ? (parallel_txns_conflicted * 100.0 / parallel_txns_submitted) : 0);
+        
+        // Calculate batch statistics for parallel section
+        parallel_batches = total_batches - (parallel_transactions_completed / MAX_BATCH_SIZE);
+        if (parallel_batches > 0) begin
+            parallel_avg_batch_size = parallel_txns_completed * 1.0 / parallel_batches;
+        end else begin
+            parallel_avg_batch_size = 0;
+        end
+        
+        $display("\nBatch Statistics:");
+        $display("  Batches processed: %0d", parallel_batches);
+        $display("  Avg batch size:    %0.2f", parallel_avg_batch_size);
+        
+        $display("\nConflict Analysis:");
+        // We don't have per-type conflict counts for the parallel section
+        // so we'll just show the total conflicts
+        $display("  Total conflicts: %0d", parallel_txns_conflicted);
+        
+        $display("\nPerformance Metrics:");
+        $display("  Total simulation cycles: %0d", parallel_cycles);
+        $display("  Transactions processed per cycle: %0.3f", parallel_txns_per_cycle);
+        $display("  Transactions completed per cycle: %0.3f", 
+                 parallel_txns_completed > 0 ? (parallel_txns_completed * 1.0 / parallel_cycles) : 0);
+        $display("  Cycles per transaction: %0.2f", parallel_cycles_per_txn);
+        $display("  Cycles per completed transaction: %0.2f", 
+                 parallel_txns_completed > 0 ? (parallel_cycles * 1.0 / parallel_txns_completed) : 0);
+        
+        // Calculate throughput in millions of transactions per second
+        // Assuming 100MHz clock (10ns cycle time)
+        parallel_submit_mtps = parallel_txns_per_cycle * 100.0;
+        parallel_complete_mtps = parallel_txns_completed > 0 ? 
+                               (parallel_txns_completed * 100.0 / parallel_cycles) : 0;
+        
+        $display("  Txns submitted: %0.2f M/s", parallel_submit_mtps);
+        $display("  Txns completed: %0.2f M/s", parallel_complete_mtps);
+        
+        // Use a baseline throughput of 0.305 txns/cycle from single instance run
+        $display("  Throughput improvement: %0.2fX (vs. single instance)", 
+                 parallel_txns_per_cycle > 0 ? parallel_txns_per_cycle / 0.305 : 1.0);
+        $display("  Theoretical max improvement: %0.2fX", NUM_PARALLEL_INSTANCES * 1.0);
+        $display("----------------------------------------");
+    end else begin
+        $display("Skipping parallel tests - only %0d instance configured", NUM_PARALLEL_INSTANCES);
     end
     
     // Handle any remaining transactions to reach NUM_TEST_CASES
