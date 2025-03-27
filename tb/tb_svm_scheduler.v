@@ -234,6 +234,7 @@ typedef enum {
 } test_pattern_t;
 
 // Task to generate a transaction with specific dependency patterns
+// This task is used to generate sequential transactions with specific dependency patterns
 task generate_transaction;
     input [63:0] transaction_id;
     input [2:0] pattern_type;  // Using test_pattern_t enum
