@@ -626,10 +626,8 @@ initial begin
         // We'll skip the parallel section metrics here since they're included in the final statistics
         // This avoids confusion with duplicate metrics
         
-        // Use a baseline throughput of 0.305 txns/cycle from single instance run
-        $display("  Throughput improvement: %0.2fX (vs. single instance)", 
-                 parallel_txns_per_cycle > 0 ? parallel_txns_per_cycle / 0.305 : 1.0);
-        $display("  Theoretical max improvement: %0.2fX", NUM_PARALLEL_INSTANCES * 1.0);
+        // Display information about parallel instances
+        $display("  Using %0d parallel instances", NUM_PARALLEL_INSTANCES);
         $display("----------------------------------------");
     end else begin
         $display("Skipping parallel tests - only %0d instance configured", NUM_PARALLEL_INSTANCES);
