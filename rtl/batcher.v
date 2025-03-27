@@ -7,7 +7,8 @@ module batcher #(
     parameter MAX_BATCH_SIZE = 8,
     parameter BATCH_TIMEOUT_CYCLES = 100,
     parameter MAX_PENDING_TRANSACTIONS = 16,
-    parameter INSERTION_QUEUE_DEPTH = 8
+    parameter INSERTION_QUEUE_DEPTH = 8,
+    parameter INSTANCE_ID = 0      // Instance ID for debug output
 ) (
     input wire clk,
     input wire rst_n,
@@ -105,7 +106,8 @@ module batcher #(
     // Instantiate batch stage
     batch #(
         .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
-        .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES)
+        .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES),
+        .INSTANCE_ID(INSTANCE_ID)
     ) batch_inst (
         .clk(clk),
         .rst_n(rst_n),

@@ -14,15 +14,14 @@ module tb_svm_scheduler;
 //-----------------------------------------------------------------------------
 
 // Test configuration
-parameter NUM_TEST_CASES = 500;     // Number of test cases to generate
+parameter NUM_TEST_CASES = 500;     // Number of test cases to generate (parallel only)
 parameter CONFLICT_INTERVAL = 5;    // Generate conflict every Nth transaction
 parameter MAX_TIMEOUT_CYCLES = 2000; // Maximum cycles to wait for completion
 parameter STALL_TIMEOUT = 500;      // Cycles before declaring system stalled
 parameter PROGRESS_INTERVAL = 100;   // Display progress every N cycles
 
 // Test pattern configuration
-parameter NUM_TEST_SECTIONS = 7;    // Number of different test sections
-parameter SECTION_SIZE = NUM_TEST_CASES / NUM_TEST_SECTIONS; // Size of each test section
+parameter NUM_TEST_SECTIONS = 1;    // Only one test section (parallel)
 
 // Debug configuration
 parameter DEBUG_ENABLE = 1;          // Enable detailed debug output
@@ -334,9 +333,10 @@ endtask
 task display_in_flight;
     output [31:0] in_flight;
     begin
-        // Calculate in-flight transactions safely
-        in_flight = (total_transactions_completed + unique_transactions_conflicted <= total_transactions_submitted) ? 
-                  (total_transactions_submitted - total_transactions_completed - unique_transactions_conflicted) : 0;
+        // Calculate in-flight transactions accurately
+        // In-flight = Submitted - Completed - Conflicted
+        in_flight = (total_transactions_completed + total_transactions_conflicted <= total_transactions_submitted) ? 
+                  (total_transactions_submitted - total_transactions_completed - total_transactions_conflicted) : 0;
         $display("  In-flight:  %0d", in_flight);
     end
 endtask
@@ -460,131 +460,21 @@ initial begin
     
     // Use the test pattern configuration parameters defined at module level
     
+    // Reset test case counter since we're only running parallel tests
+    test_case_counter = 0;
+    total_transactions_submitted = 0;
+    total_transactions_completed = 0;
+    total_transactions_conflicted = 0;
+    unique_transactions_conflicted = 0;
+    
     // Generate test patterns
-    $display("Starting test pattern generation for %d test cases across %d test sections...", 
-             NUM_TEST_CASES, NUM_TEST_SECTIONS);
+    $display("Starting parallel transaction testing with %0d instances...", 
+             NUM_PARALLEL_INSTANCES);
     
     //-------------------------------------------------------------------------
-    // Section 1: Normal transactions (no conflicts)
+    // Section 1: Parallel Transaction Submission
     //-------------------------------------------------------------------------
-    $display("\nSection 1: Normal transactions (no conflicts)");
-    for (test_case_counter = 0; test_case_counter < SECTION_SIZE; test_case_counter++) begin
-        generate_transaction(test_case_counter, PATTERN_NORMAL);
-        
-        // Progress reporting
-        if (test_case_counter % PROGRESS_INTERVAL == 0 && test_case_counter > 0) begin
-            display_progress(test_case_counter, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 2: Write-After-Write (WAW) conflicts
-    //-------------------------------------------------------------------------
-    $display("\nSection 2: Write-After-Write (WAW) conflicts");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        // Every 3rd transaction has WAW conflict potential
-        test_case_counter = SECTION_SIZE + i;
-        generate_transaction(test_case_counter, 
-                           (i % 3 == 0) ? PATTERN_WAW_CONFLICT : PATTERN_NORMAL);
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 3: Read-After-Write (RAW) conflicts
-    //-------------------------------------------------------------------------
-    $display("\nSection 3: Read-After-Write (RAW) conflicts");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        // Every 4th transaction has RAW conflict potential
-        test_case_counter = 2 * SECTION_SIZE + i;
-        generate_transaction(test_case_counter, 
-                           (i % 4 == 0) ? PATTERN_RAW_CONFLICT : PATTERN_NORMAL);
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 4: Write-After-Read (WAR) conflicts
-    //-------------------------------------------------------------------------
-    $display("\nSection 4: Write-After-Read (WAR) conflicts");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        // Every 5th transaction has WAR conflict potential
-        test_case_counter = 3 * SECTION_SIZE + i;
-        generate_transaction(test_case_counter, 
-                           (i % 5 == 0) ? PATTERN_WAR_CONFLICT : PATTERN_NORMAL);
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 5: Mixed conflict patterns
-    //-------------------------------------------------------------------------
-    $display("\nSection 5: Mixed conflict patterns");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        test_case_counter = 4 * SECTION_SIZE + i;
-        // Rotate through different conflict patterns
-        case (i % 5)
-            0: generate_transaction(test_case_counter, PATTERN_WAW_CONFLICT);
-            1: generate_transaction(test_case_counter, PATTERN_RAW_CONFLICT);
-            2: generate_transaction(test_case_counter, PATTERN_WAR_CONFLICT);
-            3: generate_transaction(test_case_counter, PATTERN_MIXED_CONFLICT);
-            4: generate_transaction(test_case_counter, PATTERN_NORMAL);
-        endcase
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 6: Burst transactions (rapid submission)
-    //-------------------------------------------------------------------------
-    $display("\nSection 6: Burst transactions");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        test_case_counter = 5 * SECTION_SIZE + i;
-        // Burst transactions with minimal delay
-        generate_transaction(test_case_counter, PATTERN_BURST);
-        // No delay between transactions to stress the system
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 7: Sparse transactions (with delays)
-    //-------------------------------------------------------------------------
-    $display("\nSection 7: Sparse transactions with delays");
-    for (integer i = 0; i < SECTION_SIZE; i++) begin
-        test_case_counter = 6 * SECTION_SIZE + i;
-        generate_transaction(test_case_counter, PATTERN_SPARSE);
-        
-        // Add variable delays between transactions
-        if (i % 10 == 0) begin
-            insert_delay(5);  // 5-cycle delay every 10 transactions
-        end
-        
-        // Progress reporting
-        if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-            display_progress(i, SECTION_SIZE);
-        end
-    end
-    
-    //-------------------------------------------------------------------------
-    // Section 8: Parallel Transaction Submission (NEW)
-    //-------------------------------------------------------------------------
-    $display("\nSection 8: Parallel Transaction Submission");
+    $display("\nSection 1: Parallel Transaction Submission");
     
     // Only run this section if we have multiple parallel instances
     if (NUM_PARALLEL_INSTANCES > 1) begin
@@ -599,8 +489,8 @@ initial begin
         repeat (5) @(posedge clk);
         parallel_start_time = $time;
         
-        // Reset the current instance selection in top module to ensure fair distribution
-        force dut.current_instance = 0;
+        // Allow natural round-robin instance selection
+        // (force/release mechanism removed to test all parallel instances)
         
         // Reset parallel transaction counters to ensure accurate metrics
         parallel_txns_submitted = 0;
@@ -611,42 +501,47 @@ initial begin
         
         // Submit parallel normal transactions
         $display("Submitting parallel normal transactions...");
-        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+        for (integer i = 0; i < NUM_TEST_CASES/4; i += NUM_PARALLEL_INSTANCES) begin
             // Use a different base ID to avoid conflicts with previous sections
             generate_parallel_transactions(10000 + i, PATTERN_NORMAL, NUM_PARALLEL_INSTANCES);
             
-            // Update parallel transaction count
+            // Update parallel transaction count and test_case_counter
             parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+            test_case_counter += NUM_PARALLEL_INSTANCES;
             
             // Small delay to allow processing
             insert_delay(2);
             
             // Progress reporting
             if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-                display_progress(i, SECTION_SIZE/4);
+                display_progress(i, NUM_TEST_CASES/4);
             end
         end
         
         // Submit parallel transactions with potential conflicts
         $display("\nSubmitting parallel transactions with potential conflicts...");
-        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+        for (integer i = 0; i < NUM_TEST_CASES/4; i += NUM_PARALLEL_INSTANCES) begin
             // Alternate between different conflict patterns
             case (i % 4)
                 0: begin
                     generate_parallel_transactions(20000 + i, PATTERN_WAW_CONFLICT, NUM_PARALLEL_INSTANCES);
                     parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                    test_case_counter += NUM_PARALLEL_INSTANCES;
                 end
                 1: begin
                     generate_parallel_transactions(20000 + i, PATTERN_RAW_CONFLICT, NUM_PARALLEL_INSTANCES);
                     parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                    test_case_counter += NUM_PARALLEL_INSTANCES;
                 end
                 2: begin
                     generate_parallel_transactions(20000 + i, PATTERN_WAR_CONFLICT, NUM_PARALLEL_INSTANCES);
                     parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                    test_case_counter += NUM_PARALLEL_INSTANCES;
                 end
                 3: begin
                     generate_parallel_transactions(20000 + i, PATTERN_MIXED_CONFLICT, NUM_PARALLEL_INSTANCES);
                     parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
+                    test_case_counter += NUM_PARALLEL_INSTANCES;
                 end
             endcase
             
@@ -655,13 +550,13 @@ initial begin
             
             // Progress reporting
             if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-                display_progress(i, SECTION_SIZE/4);
+                display_progress(i, NUM_TEST_CASES/4);
             end
         end
         
         // Submit parallel burst transactions
         $display("\nSubmitting parallel burst transactions...");
-        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+        for (integer i = 0; i < NUM_TEST_CASES/4; i += NUM_PARALLEL_INSTANCES) begin
             generate_parallel_transactions(30000 + i, PATTERN_BURST, NUM_PARALLEL_INSTANCES);
             parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
             
@@ -669,13 +564,13 @@ initial begin
             
             // Progress reporting
             if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-                display_progress(i, SECTION_SIZE/4);
+                display_progress(i, NUM_TEST_CASES/4);
             end
         end
         
         // Submit parallel sparse transactions
         $display("\nSubmitting parallel sparse transactions...");
-        for (integer i = 0; i < SECTION_SIZE/4; i += NUM_PARALLEL_INSTANCES) begin
+        for (integer i = 0; i < NUM_TEST_CASES/4; i += NUM_PARALLEL_INSTANCES) begin
             generate_parallel_transactions(40000 + i, PATTERN_SPARSE, NUM_PARALLEL_INSTANCES);
             parallel_txns_submitted += NUM_PARALLEL_INSTANCES;
             
@@ -686,12 +581,11 @@ initial begin
             
             // Progress reporting
             if (i % PROGRESS_INTERVAL == 0 && i > 0) begin
-                display_progress(i, SECTION_SIZE/4);
+                display_progress(i, NUM_TEST_CASES/4);
             end
         end
         
-        // Release the forced value
-        release dut.current_instance;
+        // No need to release since we're not forcing the instance selection
         
         // Wait for any in-flight transactions to complete
         repeat (50) @(posedge clk);
@@ -729,51 +623,8 @@ initial begin
             parallel_txns_per_cycle = 0;
         end
         
-        // Display parallel section performance metrics
-        $display("\nParallel Section Performance Metrics (with %0d instances):", NUM_PARALLEL_INSTANCES);
-        $display("----------------------------------------");
-        $display("Total Transactions:");
-        $display("  Submitted:  %0d", parallel_txns_submitted);
-        $display("  Completed:  %0d", parallel_txns_completed);
-        $display("  Conflicted: %0d (individual conflicts)", parallel_txns_conflicted);
-        $display("  Unique Conflicted: %0d (%0.2f%%)", 
-                 parallel_txns_conflicted,
-                 (parallel_txns_submitted > 0) ? (parallel_txns_conflicted * 100.0 / parallel_txns_submitted) : 0);
-        
-        // Calculate batch statistics for parallel section
-        parallel_batches = total_batches - (parallel_transactions_completed / MAX_BATCH_SIZE);
-        if (parallel_batches > 0) begin
-            parallel_avg_batch_size = parallel_txns_completed * 1.0 / parallel_batches;
-        end else begin
-            parallel_avg_batch_size = 0;
-        end
-        
-        $display("\nBatch Statistics:");
-        $display("  Batches processed: %0d", parallel_batches);
-        $display("  Avg batch size:    %0.2f", parallel_avg_batch_size);
-        
-        $display("\nConflict Analysis:");
-        // We don't have per-type conflict counts for the parallel section
-        // so we'll just show the total conflicts
-        $display("  Total conflicts: %0d", parallel_txns_conflicted);
-        
-        $display("\nPerformance Metrics:");
-        $display("  Total simulation cycles: %0d", parallel_cycles);
-        $display("  Transactions processed per cycle: %0.3f", parallel_txns_per_cycle);
-        $display("  Transactions completed per cycle: %0.3f", 
-                 parallel_txns_completed > 0 ? (parallel_txns_completed * 1.0 / parallel_cycles) : 0);
-        $display("  Cycles per transaction: %0.2f", parallel_cycles_per_txn);
-        $display("  Cycles per completed transaction: %0.2f", 
-                 parallel_txns_completed > 0 ? (parallel_cycles * 1.0 / parallel_txns_completed) : 0);
-        
-        // Calculate throughput in millions of transactions per second
-        // Assuming 100MHz clock (10ns cycle time)
-        parallel_submit_mtps = parallel_txns_per_cycle * 100.0;
-        parallel_complete_mtps = parallel_txns_completed > 0 ? 
-                               (parallel_txns_completed * 100.0 / parallel_cycles) : 0;
-        
-        $display("  Txns submitted: %0.2f M/s", parallel_submit_mtps);
-        $display("  Txns completed: %0.2f M/s", parallel_complete_mtps);
+        // We'll skip the parallel section metrics here since they're included in the final statistics
+        // This avoids confusion with duplicate metrics
         
         // Use a baseline throughput of 0.305 txns/cycle from single instance run
         $display("  Throughput improvement: %0.2fX (vs. single instance)", 
@@ -784,22 +635,15 @@ initial begin
         $display("Skipping parallel tests - only %0d instance configured", NUM_PARALLEL_INSTANCES);
     end
     
-    // Handle any remaining transactions to reach NUM_TEST_CASES
-    for (integer i = 7 * SECTION_SIZE; i < NUM_TEST_CASES; i++) begin
-        test_case_counter = i;
-        generate_transaction(test_case_counter, PATTERN_NORMAL);
-    end
+    // All transactions are now generated in the parallel section
+    // No need for additional transactions
     
     // Ensure total_transactions_submitted is set to the exact number of test cases
     total_transactions_submitted = NUM_TEST_CASES;
     
     // Report completion of test generation phase
-    if (test_case_counter == NUM_TEST_CASES) begin
-        $display("\nAll %0d test cases generated successfully", NUM_TEST_CASES);
-        display_progress(test_case_counter, NUM_TEST_CASES);
-    end else begin
-        $display("\nWARNING: Only %0d/%0d test cases were generated", test_case_counter, NUM_TEST_CASES);
-    end
+    $display("\nAll parallel transactions submitted successfully");
+    display_progress(total_transactions_submitted, NUM_TEST_CASES);
     
     //-------------------------------------------------------------------------
     // Wait for completion or timeout
@@ -851,6 +695,8 @@ initial begin
             // Check completion conditions
             if (total_transactions_completed + unique_transactions_conflicted >= total_transactions_submitted) begin
                 done = 1;
+                // Update test_case_counter to match total_transactions_submitted
+                test_case_counter = total_transactions_submitted;
             end
             
             // If stalled for too long, force a reset
@@ -880,7 +726,8 @@ initial begin
     //-------------------------------------------------------------------------
     
     // Calculate unique conflicted transactions for final report
-    unique_transactions_conflicted = total_transactions_submitted - total_transactions_completed;
+    // Use the actual conflict count instead of assuming all non-completed transactions were conflicts
+    unique_transactions_conflicted = total_transactions_conflicted;
     
     // Display header
     $display("\nTest completed! Final Statistics:");

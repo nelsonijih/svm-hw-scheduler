@@ -134,7 +134,8 @@ module top #(
                 .MAX_BATCH_SIZE(MAX_BATCH_SIZE),
                 .BATCH_TIMEOUT_CYCLES(BATCH_TIMEOUT_CYCLES),
                 .MAX_PENDING_TRANSACTIONS(MAX_PENDING_TRANSACTIONS),
-                .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH)
+                .INSERTION_QUEUE_DEPTH(INSERTION_QUEUE_DEPTH),
+                .INSTANCE_ID(i)  // Pass the instance ID for debug output
             ) batcher_inst (
                 .clk(clk),
                 .rst_n(rst_n),

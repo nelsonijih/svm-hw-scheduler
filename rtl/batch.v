@@ -3,7 +3,8 @@ module batch #(
     parameter MAX_BATCH_SIZE = 8,
     parameter MIN_BATCH_SIZE = 2,  // Minimum transactions before timeout can trigger
     parameter BATCH_TIMEOUT_CYCLES = 100,
-    parameter DEBUG_ENABLE = 1
+    parameter DEBUG_ENABLE = 1,
+    parameter INSTANCE_ID = 0      // Instance ID for debug output
 ) (
     input wire clk,
     input wire rst_n,
@@ -291,6 +292,21 @@ module batch #(
                                 m_axis_tvalid <= 1'b0;
                                 state <= IDLE;
                                 s_axis_tready <= 1'b1;
+                                
+                                // Display detailed batch information when batch is completed
+                                if (DEBUG_ENABLE) begin
+                                    $display("\n==== BATCH COMPLETED [Instance %0d] ====", INSTANCE_ID);
+                                    $display("  Total transactions in batch: %0d", batch_count);
+                                    $display("  Batch read dependencies: %h", batch_read_deps_union);
+                                    $display("  Batch write dependencies: %h", batch_write_deps_union);
+                                    $display("  Batch timeout counter: %0d cycles", timeout_counter);
+                                    $display("  Transactions in this batch:");
+                                    for (integer i = 0; i < batch_count; i = i + 1) begin
+                                        $display("    [%0d] Owner ID: %0d, Read deps: %h, Write deps: %h", 
+                                                 i, batch_owner_programID[i], batch_read_deps[i], batch_write_deps[i]);
+                                    end
+                                    $display("==== END OF BATCH INFO [Instance %0d] ====", INSTANCE_ID);
+                                end
                                 output_index <= 4'd0;
                                 batch_completed <= 1'b1;
                                 output_stall_detected <= 1'b0; // Reset stall detection
