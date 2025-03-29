@@ -82,7 +82,6 @@ module conflict_manager #(
     // RAW (Read-After-Write) conflict: Transaction tries to read data that another transaction might write
     assign raw_conflict = |(txn_read_deps & global_write_dependencies);
     
-    // WAW (Write-After-Write) conflict: Transaction tries to write data that another transaction might write
     // WAW (Write-After-Write) conflict: Transaction tries to write data that another transaction is writing
     assign waw_conflict = |(txn_write_deps & global_write_dependencies);
     

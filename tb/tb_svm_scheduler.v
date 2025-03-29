@@ -14,7 +14,7 @@ module tb_svm_scheduler;
 //-----------------------------------------------------------------------------
 
 // Test configuration
-parameter NUM_TEST_CASES = 500;     // Number of test cases to generate (parallel only)
+parameter NUM_TEST_CASES = 5000;     // Number of test cases to generate (parallel only)
 parameter CONFLICT_INTERVAL = 5;    // Generate conflict every Nth transaction
 parameter MAX_TIMEOUT_CYCLES = 2000; // Maximum cycles to wait for completion
 parameter STALL_TIMEOUT = 500;      // Cycles before declaring system stalled
