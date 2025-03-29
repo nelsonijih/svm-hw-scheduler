@@ -1,5 +1,6 @@
-# SVM Transaction Scheduler High-level Design Specs
-A 3-stage pipeline for reading SVM transactions and creating batches that contain non-conflicting transactions. 
+# Hardware Implementation of Conflict Detection in Firedance SVM Transaction Scheduler
+An experimental 3-stage pipeline for reading SVM transactions and creating batches that contain non-conflicting transactions. 
+The goal is to achieve high-throughput XOR operation over a sustained stream of transactions at a better performance cost per watt(compared to GPU, CPU-simd).
 
 <img width="1094" alt="pipelined-design" src="https://github.com/user-attachments/assets/4132d790-416a-4385-9f5b-5b5be61ac6fc" />
 
